@@ -1,0 +1,108 @@
+# Builds Debate Night 2028 for Mac, Windows and Linux on GitHub's free build machines.
+# Run it from the Actions tab ("Run workflow"), or push a tag like v0.3.0 to also publish a Release.
+name: Build Debate Night 2028
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  LLAMA_TAG: b11600   # llama.cpp release that provides the AI engine (Metal on Mac, Vulkan/CPU on Windows)
+
+jobs:
+  mac:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - name: Fetch the AI engine (Apple Silicon and Intel)
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          node scripts/fetch-llama.mjs mac-arm64
+          node scripts/fetch-llama.mjs mac-x64
+      - run: npm install --no-audit --no-fund
+      - name: Build the apps
+        run: npx electron-builder --mac --arm64 --x64 --publish never
+      - name: Sign for local use and zip
+        # Ad-hoc signing lets Apple Silicon Macs run the app. Without a paid Apple Developer ID,
+        # players approve it once in System Settings > Privacy & Security > Open Anyway.
+        run: |
+          mkdir -p out
+          for dir in dist/mac-arm64 dist/mac; do
+            app="$dir/Debate Night 2028.app"
+            [ -d "$app" ] || continue
+            find "$app/Contents/Resources/llama" -type f \( -name "*.dylib" -o -name "llama-server" \) -exec codesign --force --sign - {} \;
+            codesign --force --deep --sign - "$app"
+            codesign --verify --deep --verbose=1 "$app"
+            arch=$([ "$dir" = "dist/mac-arm64" ] && echo arm64 || echo x64)
+            ditto -c -k --sequesterRsrc --keepParent "$app" "out/DebateNight2028-mac-$arch.zip"
+          done
+          ls -la out
+      - name: Check the bundled AI engine starts
+        run: |
+          "dist/mac-arm64/Debate Night 2028.app/Contents/Resources/llama/llama-server" --version
+      - uses: actions/upload-artifact@v4
+        with: { name: mac, path: out/*.zip }
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - name: Fetch the AI engine
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: node scripts/fetch-llama.mjs win-x64
+      - run: npm install --no-audit --no-fund
+      - name: Build the app
+        run: npx electron-builder --win --x64 --publish never
+      - name: Check the bundled AI engine starts
+        shell: bash
+        run: '"dist/win-unpacked/resources/llama/llama-server.exe" --version'
+      - uses: actions/upload-artifact@v4
+        with: { name: windows, path: dist/*.zip }
+
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - name: Fetch the AI engine
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: node scripts/fetch-llama.mjs linux-x64
+      - run: npm install --no-audit --no-fund
+      - name: Build the app
+        run: npx electron-builder --linux --x64 --publish never
+      - name: Check the bundled AI engine starts
+        run: dist/linux-unpacked/resources/llama/llama-server --version
+      - uses: actions/upload-artifact@v4
+        with: { name: linux, path: dist/*.AppImage }
+
+  publish:
+    needs: [mac, windows, linux]
+    runs-on: ubuntu-latest
+    env:
+      BUTLER_API_KEY: ${{ secrets.BUTLER_API_KEY }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: builds, merge-multiple: true }
+      - run: ls -la builds
+      - name: Attach to a GitHub Release (tag pushes only)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with: { files: "builds/*" }
+      - name: Upload to itch.io (only if you've added the BUTLER_API_KEY secret and ITCH_GAME variable)
+        if: env.BUTLER_API_KEY != '' && vars.ITCH_GAME != ''
+        run: |
+          curl -sL -o butler.zip https://broth.itch.zone/butler/linux-amd64/LATEST/archive/default
+          unzip -q butler.zip -d butler && chmod +x butler/butler
+          ./butler/butler push builds/DebateNight2028-mac-arm64.zip "${{ vars.ITCH_GAME }}:mac-apple-silicon"
+          ./butler/butler push builds/DebateNight2028-mac-x64.zip "${{ vars.ITCH_GAME }}:mac-intel"
+          ./butler/butler push builds/*win*.zip "${{ vars.ITCH_GAME }}:windows"
+          ./butler/butler push builds/*.AppImage "${{ vars.ITCH_GAME }}:linux"
