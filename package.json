@@ -1,0 +1,38 @@
+{
+  "name": "debate-night-2028",
+  "productName": "Debate Night 2028",
+  "version": "0.3.0",
+  "description": "A presidential debate game with a built-in AI that runs on your computer.",
+  "main": "main.js",
+  "license": "UNLICENSED",
+  "author": "Debate Night 2028",
+  "homepage": "https://itch.io",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "fetch-llama": "node scripts/fetch-llama.mjs",
+    "dist:mac": "electron-builder --mac --arm64 --x64 --publish never",
+    "dist:win": "electron-builder --win --x64 --publish never",
+    "dist:linux": "electron-builder --linux --x64 --publish never"
+  },
+  "devDependencies": {
+    "electron": "33.2.1",
+    "electron-builder": "25.1.8"
+  },
+  "build": {
+    "appId": "com.debatenight2028.game",
+    "productName": "Debate Night 2028",
+    "artifactName": "DebateNight2028-${os}-${arch}.${ext}",
+    "directories": { "output": "dist", "buildResources": "build" },
+    "files": ["main.js", "preload.js", "ai-service.js", "models.js", "game/**", "package.json"],
+    "extraResources": [{ "from": "resources/llama-${arch}", "to": "llama" }],
+    "mac": {
+      "target": [{ "target": "dir" }],
+      "category": "public.app-category.simulation-games",
+      "identity": null,
+      "hardenedRuntime": false
+    },
+    "win": { "target": [{ "target": "zip" }] },
+    "linux": { "target": [{ "target": "AppImage" }], "category": "Game" }
+  }
+}
