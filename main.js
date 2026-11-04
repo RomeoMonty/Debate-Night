@@ -103,7 +103,7 @@ function createWindow() {
   });
   win.webContents.on("unresponsive", () => note("Game window stopped responding."));
   win.webContents.on("responsive", () => note("Game window is responding again."));
-  win.loadFile(path.join(__dirname, "index.html"));
+  win.loadFile(path.join(__dirname, "game", "index.html"));
   win.on("closed", () => { win = null; });
 }
 
