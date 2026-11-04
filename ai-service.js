@@ -17,11 +17,13 @@ class AIService {
    * @param {string} o.modelsDir  where downloaded models live
    * @param {string} o.serverPath full path to the llama-server binary
    * @param {(e:object)=>void} [o.onEvent] progress / status / exit events for the window
+   * @param {(line:string)=>void} [o.note] writes a line to the game's log file
    */
-  constructor({ modelsDir, serverPath, onEvent }) {
+  constructor({ modelsDir, serverPath, onEvent, note }) {
     this.modelsDir = modelsDir;
     this.serverPath = serverPath;
     this.onEvent = onEvent || (() => {});
+    this.note = note || (() => {});
     this.manifestPath = path.join(modelsDir, "manifest.json");
     this.proc = null;
     this.server = null; // {port, key, modelId, ctx}
@@ -179,14 +181,18 @@ class AIService {
   // Fastest settings first; if this machine can't take them, fall back to the most compatible ones.
   // Qwen 3.5 keeps most of its memory in a small fixed-size state, so the attention cache stays at
   // full precision (quantizing it saves little and can garble these models).
+  // Multi-token prediction is left off: on Apple's chips it measured slower, not faster, for models
+  // this size (llama.cpp #23752), and newer model uploads would otherwise switch it on silently.
   argSets(m) {
     const sets = [];
-    if (m.mtp) sets.push(["-ngl", "all", "-fa", "on", "--spec-type", "draft-mtp"]);
     sets.push(["-ngl", "all", "-fa", "on"]);
     sets.push(["-ngl", "all", "-fa", "auto"]);
     sets.push(["-ngl", "0", "-fa", "auto"]); // no usable graphics chip: run on the processor
     return sets;
   }
+  // Apple Silicon always has a graphics chip the engine can use, so the slow processor-only
+  // mode is never right there; it can only be a leftover from a one-off failure.
+  lowestSet(m) { const n = this.argSets(m).length; return process.platform === "darwin" && process.arch === "arm64" ? n - 2 : n - 1; }
 
   // Starts, restarts and stops run one at a time, so two engines can never be launching at once.
   locked(fn) { const run = () => fn(); const p = (this.lock || Promise.resolve()).then(run, run); this.lock = p.catch(() => {}); return p; }
@@ -203,16 +209,25 @@ class AIService {
     if (!fs.existsSync(this.serverPath)) throw Object.assign(new Error("The AI engine is missing from this copy of the game: " + this.serverPath), { code: "no_engine" });
     const modelPath = path.join(this.modelsDir, man.file);
     const sets = this.argSets(m);
+    // Older versions also remembered slow-downs caused by one-off hiccups (like the computer
+    // sleeping). Forget those once, so the fastest settings get a fresh try.
+    if (man.settingsV !== 3) {
+      const all = await this.manifest();
+      if (all[id]) { if (all[id].settings) this.note(`Clearing an old slow-down (settings level ${all[id].settings}) for a fresh try at full speed.`); all[id].settings = 0; all[id].settingsV = 3; await this.saveManifest(all); }
+      man.settings = 0;
+    }
     // Start from the settings that worked last time, so a fallback is only paid for once.
-    const first = Math.min(Math.max(0, man.settings || 0), sets.length - 1);
+    const first = Math.min(Math.max(0, man.settings || 0), this.lowestSet(m));
     let lastErr = null;
     for (let i = first; i < sets.length; i++) {
       try {
         await this.launch(m, modelPath, sets[i]);
         this.server.settingsIndex = i;
+        this.note(`AI started: ${m.id} with ${sets[i].join(" ")}${i > first ? " (faster settings failed to start)" : ""}`);
         if (man.settings !== i) { const all = await this.manifest(); if (all[id]) { all[id].settings = i; await this.saveManifest(all); } }
         return this.publicServer();
       } catch (e) {
+        this.note(`AI failed to start with ${sets[i].join(" ")}: ${e.code || ""} ${e.message || e} | ${(e.log || []).slice(-4).join(" / ")}`);
         lastErr = e; await this.stop();
         if (this.cancelStart) throw Object.assign(new Error("Stopped."), { code: "cancelled" });
         // Out of memory on the graphics chip: only the processor fallback can still help, and not on
@@ -223,16 +238,42 @@ class AIService {
     throw lastErr;
   }
 
-  // A running server misbehaved with its current settings: restart one step safer and remember it.
+  // The running AI stopped answering. Usually that's a one-off (the computer slept, a hiccup), so:
+  // if it's actually still fine, carry on; otherwise restart it with the same settings, and only
+  // step down to safer settings if that fails too. Nothing here is remembered for next time, so
+  // one bad moment can never leave the game permanently slow.
   degrade(id) { return this.locked(() => this._degrade(id)); }
   async _degrade(id) {
-    const cur = this.server && this.server.modelId === id ? this.server.settingsIndex : 0;
-    const all = await this.manifest();
-    if (!all[id]) throw Object.assign(new Error("That model isn't downloaded yet."), { code: "not_downloaded" });
-    all[id].settings = Math.min(cur + 1, this.argSets(this.model(id)).length - 1);
-    await this.saveManifest(all);
+    const m = this.model(id), sets = this.argSets(m);
+    const cur = this.server && this.server.modelId === id ? this.server.settingsIndex : null;
+    if (this.server && this.proc && await this.healthy()) { this.note("AI hiccup: it was still running, so it was kept as is."); return this.publicServer(); }
+    this.note(`AI stopped answering (${this.log.slice(-3).join(" / ") || "no message"}). Restarting it.`);
+    const man = (await this.manifest())[id];
+    if (!man) throw Object.assign(new Error("That model isn't downloaded yet."), { code: "not_downloaded" });
     await this.stop();
-    return this._start(id);
+    const modelPath = path.join(this.modelsDir, man.file);
+    let lastErr = null;
+    for (let i = cur ?? (man.settings || 0); i <= this.lowestSet(m); i++) {
+      try {
+        await this.launch(m, modelPath, sets[i]);
+        this.server.settingsIndex = i;
+        this.note(`AI restarted with ${sets[i].join(" ")} for this session.`);
+        return this.publicServer();
+      } catch (e) { lastErr = e; this.note(`Restart failed with ${sets[i].join(" ")}: ${e.code || ""} ${e.message || e}`); await this.stop(); }
+    }
+    throw lastErr || Object.assign(new Error("The AI couldn't restart."), { code: "server_exit" });
+  }
+  async healthy() {
+    const s = this.server;
+    try { const r = await fetch(`http://127.0.0.1:${s.port}/health`, { headers: { Authorization: `Bearer ${s.key}` }, signal: AbortSignal.timeout(3000) }); return r.ok; }
+    catch { return false; }
+  }
+  // "Try the fast settings again": forget any fallback and restart from the fastest settings.
+  async resetSpeed(id) {
+    const all = await this.manifest();
+    if (all[id]) { all[id].settings = 0; await this.saveManifest(all); }
+    this.note("Speed settings reset to the fastest.");
+    return this.locked(async () => { await this.stop(); return this._start(id); });
   }
 
   async launch(m, modelPath, extra) {
@@ -242,14 +283,18 @@ class AIService {
       "-m", modelPath, "--host", "127.0.0.1", "--port", String(port),
       "-c", String(m.ctx), "-np", "1",
       "--reasoning-budget", "0", "--jinja",
-      // Keep a few memory checkpoints so the shared game briefing is reused between calls,
-      // and cap the host-side prompt cache so it can't grow on small machines.
-      "-ctxcp", "4", "-cram", String(m.cacheRamMB || 512),
+      // Saved snapshots of the AI's memory let each call skip re-reading the briefing and the debate
+      // so far (the engine takes one at the start of each new message). The separate whole-prompt
+      // cache is off: there is only ever one conversation, and it would copy ~130 MB per call.
+      "-ctxcp", "8", "-cram", "0",
       "--no-webui", "--api-key", key, ...extra
     ];
     this.log = [];
     this.onEvent({ type: "status", text: "Starting the AI…" });
-    const proc = spawn(this.serverPath, args, { cwd: path.dirname(this.serverPath), stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    // Keep the model in fast graphics memory between turns; by default macOS lets it go after
+    // three idle minutes, which made the first answer after a long pause slow.
+    const env = { ...process.env, GGML_METAL_RESIDENCY_KEEP_ALIVE_S: "3600" };
+    const proc = spawn(this.serverPath, args, { cwd: path.dirname(this.serverPath), stdio: ["ignore", "pipe", "pipe"], windowsHide: true, env });
     this.proc = proc;
     this.writePid(proc.pid);
     const keep = buf => { for (const line of String(buf).split(/\r?\n/)) if (line.trim()) { this.log.push(line); if (this.log.length > 60) this.log.shift(); } };
@@ -261,7 +306,10 @@ class AIService {
         this.proc = null;
         const wasReady = !!this.server;
         this.server = null;
-        if (wasReady) this.onEvent({ type: "exit", code, signal: sig, memory: looksLikeMemory(this.log), log: this.log.slice(-12) });
+        if (wasReady) {
+          this.note(`AI engine exited unexpectedly (code ${code}, signal ${sig}). Last output: ${this.log.slice(-6).join(" / ")}`);
+          this.onEvent({ type: "exit", code, signal: sig, memory: looksLikeMemory(this.log), log: this.log.slice(-12) });
+        }
       }
     });
     proc.on("error", e => { exited = { error: e }; keep(e.message); });
@@ -284,7 +332,8 @@ class AIService {
 
   publicServer() {
     const s = this.server;
-    return { port: s.port, key: s.key, modelId: s.modelId, ctx: s.ctx, settings: s.args, canDegrade: s.settingsIndex < this.argSets(this.model(s.modelId)).length - 1 };
+    return { port: s.port, key: s.key, modelId: s.modelId, ctx: s.ctx, settings: s.args, canDegrade: true,
+      mode: /-ngl 0\b/.test(s.args) ? "processor" : "graphics", fastest: s.settingsIndex === 0 };
   }
 
   // If the game ever crashes, its AI engine could be left running and holding gigabytes of memory.

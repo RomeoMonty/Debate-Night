@@ -15,9 +15,7 @@ module.exports = [
     file: "Qwen3.5-2B-Q4_K_M.gguf",
     sizeGB: 1.3,
     minRamGB: 4,
-    ctx: 8192,
-    mtp: true, // multi-token prediction: writes several words per step when the file includes it
-    cacheRamMB: 384,
+    ctx: 12288,
     note: "For computers with 4 to 8 GB of memory. Quick, with simpler opponents."
   },
   {
@@ -29,9 +27,7 @@ module.exports = [
     file: "Qwen_Qwen3.5-4B-Q4_K_M.gguf",
     sizeGB: 3.0,
     minRamGB: 8,
-    ctx: 8192,
-    mtp: true,
-    cacheRamMB: 512,
+    ctx: 12288,
     note: "The sweet spot for 8 GB Macs and most laptops. Sharp, consistent opponents."
   },
   {
@@ -43,9 +39,7 @@ module.exports = [
     file: "Qwen_Qwen3.5-9B-Q4_K_M.gguf",
     sizeGB: 6.2,
     minRamGB: 16,
-    ctx: 12288,
-    mtp: true,
-    cacheRamMB: 1024,
+    ctx: 16384,
     note: "For computers with 16 GB of memory or more. The smartest opponents and voters."
   }
 ];
