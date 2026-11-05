@@ -152,6 +152,7 @@ async function machineStats() {
     const sp = /CPU_Speed_Limit\s*=\s*(\d+)/.exec(th); if (sp) st.cpuSpeedLimit = +sp[1];
     const batt = await sh("pmset", ["-g", "batt"]);
     st.power = /AC Power/.test(batt) ? "plugged in" : /Battery Power/.test(batt) ? "battery" : "";
+    st.lowPower = /\blowpowermode\s+1\b/.test(await sh("pmset", ["-g"]));
   }
   return st;
 }

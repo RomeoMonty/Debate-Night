@@ -468,7 +468,8 @@ details summary{cursor:pointer;font-weight:600}
 
     <aside class="drawer" id="drawer" hidden>
       <button class="btn ghost small drawerclose" id="drawerClose" type="button">Close ✕</button>
-      <div class="box" id="p-transcript" hidden><h3>Transcript</h3><div class="transcript" id="transcript" aria-live="polite"></div></div>
+      <div class="box" id="p-transcript" hidden><h3>Transcript</h3><div class="transcript" id="transcript" aria-live="polite"></div>
+        <button class="btn ghost small" id="saveTxBtn" type="button" style="margin-top:10px">Save transcript</button></div>
       <div class="box" id="p-states" hidden><h3>Battleground states</h3><div id="stateMeters" style="display:flex;flex-direction:column;gap:8px"></div>
           <div class="legend"><span id="legOpp">← Opponent</span><span>polling margin</span><span id="legYou">You →</span></div></div>
       <div class="box" id="p-voters" hidden><h3>Undecided voter blocs</h3>
@@ -1559,15 +1560,15 @@ const NativeAI = {
 
 // Hard limits on every field, so a reply can never run on forever and always comes back as valid JSON.
 // Sized so that even a reply that fills every field to the limit still fits its token budget.
-const FIELD_LIMITS = {analysis:420, summary:240, fact_check:240, why:70, follow_up:300, headline:110, next_question:400, who:70, quote:240,
+const FIELD_LIMITS = {provoked_by:80, analysis:420, summary:240, fact_check:240, why:70, follow_up:300, headline:110, next_question:400, who:70, quote:240,
   your_party:220, other_party:220, pundit:200, recap:700, exit_poll:240, opp_line:240, moderator_line:240, their_best_point:200};
-const ARRAY_LIMITS = {attacks:[3, 3, 200], focus_group:[3, 3, 0], you:[0, 3, 120], opp:[0, 3, 120]};
+const ARRAY_LIMITS = {attacks:[1, 3, 200], focus_group:[3, 3, 0], you:[0, 3, 120], opp:[0, 3, 120]};
 // Compact JSON grammar for our schemas: keys in a fixed order, no whitespace, capped lengths.
 // Pretty-printed JSON costs a small model ~20% more tokens (newlines and indentation), and
 // fixing the key order makes it write its reasoning field before its verdict.
 function schemaToGBNF(schema){
   const rules = ['char ::= [^"\\\\\\x7F\\x00-\\x1F] | "\\\\" (["\\\\/bfnrt] | "u" [0-9a-fA-F]{4})',
-    'first ::= [^"\\\\\\x7F\\x00-\\x1F ,.;:!?\\-]'];
+    'first ::= [^"\\\\\\x7F\\x00-\\x1F ,.;:!?\\-\\[\\]{}]'];
   let n = 0;
   const lit = s => JSON.stringify(s);
   const add = body => { const name = "r" + (++n); rules.push(`${name} ::= ${body}`); return name; };
@@ -1593,7 +1594,7 @@ function schemaToGBNF(schema){
 
 // The opponent's speech, when the AI isn't thinking first: exactly one private plan line, then one
 // paragraph of speech. No new lines means it can't start writing other people's parts.
-const SPEAK_GBNF = 'speech ::= ([^P\\n] | "P" [^L\\n]) [^\\n]{18,1500}';
+const SPEAK_GBNF = 'speech ::= ([^Pp\\n] | [Pp] [^Ll\\n]) [^\\n]{18,1500}';
 const SPEECH_GBNF = 'root ::= "PLAN: " [^\\n]{5,220} "\\n\\n" speech\n' + SPEAK_GBNF;
 // When answering the player directly, the opponent first notes whether it just heard a slur.
 const SPEECH_HEARD_GBNF = 'root ::= "HEARD: " ("normal" | "slur" | "funny") "\\n" "PLAN: " [^\\n]{5,220} "\\n\\n" speech\n' + SPEAK_GBNF;
@@ -2143,8 +2144,8 @@ function judgePrompt(b, ri = S.ri, withNext = true, notes = S.notes){
   if (withNext && next && (next.kind === "topic" || next.kind === "curve")){
     const who = next.first === "you" ? displayName(p) : displayName(o);
     nextQ = next.kind === "curve"
-      ? `next_question: moderator ${MOD.name}'s next question, for ${who}, about character and record. Probe a real weakness or contradiction in their background, platform, or something they said tonight. 1-3 sentences.`
-      : `next_question: moderator ${MOD.name}'s next question, on "${next.label}", for ${who}. 1-3 pointed sentences. Build on this: ${clip(topicQuestion(next.topicId), b.tx)}`;
+      ? `next_question: moderator ${MOD.name}'s next question, for ${who}, about character and record. Probe a real weakness or contradiction in their background, platform, or something they said tonight. 1-3 sentences. She is strictly neutral: no insults, no praise for either candidate, no comments on how the debate is going.`
+      : `next_question: moderator ${MOD.name}'s next question, on "${next.label}", for ${who}. 1-3 pointed, strictly neutral sentences (no insults, no praise, no comments on the debate). Build on this: ${clip(topicQuestion(next.topicId), b.tx)}`;
   }
   return withHistory({system: gameContext(b), user: `TASK: Score how persuadable voters in the battleground states react to one segment of the debate${rulesInBriefing() ? ", following the SCORING RULES" : ""}.
 ${rulesInBriefing() ? "" : judgeRules() + "\n"}
@@ -2199,6 +2200,34 @@ Reply as JSON with: headline (front-page banner, at most 10 words), recap (3 sen
 
 // What the cut-in check can say the player just did (the REACTIONS section has what each one sets off).
 const AI_KINDS = ["none", "joke", "slur", "bigotry", "family", "threat", "crime", "curse", "insult", "looks", "lie_record", "conspiracy", "absurd", "stunt", "refuse", "copy", "praise", "story", "attack_mod", "address_mod"];
+// Step one of the reaction check: a few words of classification, fast enough to run after every line.
+const QUICK_SCHEMA = {type:"object", properties:{provoked_by:{type:"string"}, kind:{type:"string", enum:AI_KINDS}, react:{type:"boolean"}, press:{type:"boolean"}}, required:["provoked_by","kind","react","press"]};
+function quickCheckPrompt(b, dodge){
+  const o = S.opp, P = lastName(S.player.name), O = lastName(o.name);
+  const last = [...S.lines].reverse().find(l => l.who === "you");
+  const q = (S.lines.find(l => l.round === S.ri && l.who === "mod") || {}).text || "";
+  return withHistory({system: gameContext(b), user: `TASK: Classify what ${P} just said, for the stage crew. Reply with JSON only.
+${P} just said: ${said(last ? last.text : "", b.tx * 2)}
+provoked_by: copy, word for word, the few words ${O} can't let slide, or "".
+kind, the most serious that fits: slur (hateful slur for a group), bigotry (attacking a whole group for who they are), family (attacking ${O}'s family), threat (physical), crime (accusing ${O} of a crime), curse, insult, looks (mocking age or looks), lie_record (misstating ${O}'s record), conspiracy, absurd (nonsense, singing, a random joke instead of an answer), stunt (an off-topic dare or quiz), refuse (no answer at all), copy (repeating ${O}'s words), praise, story (a personal story), joke (a genuinely funny joke about the issue, the race or ${O} that a real audience would laugh at), attack_mod (calling the moderator biased), address_mod (asking the moderator something), none.
+react: true only if ${O} would really break the rules and cut in right now (a flat lie about ${O}, a personal insult, an attack on their family, a wild accusation, a threat, cursing at them). Ordinary disagreement: false.
+press: ${dodge ? `true only if ${P} did not answer the moderator's question at all ("${clip(q, 300)}"). A bad or short answer still counts as answering.` : "false."}`});
+}
+// Step two: the actual words, only when there's a cut-in or a follow-up to write.
+const WORDS_SCHEMA = {type:"object", properties:{opp_line:{type:"string"}, follow_up:{type:"string"}, moderator_line:{type:"string"}}, required:["opp_line","follow_up","moderator_line"]};
+function wordsPrompt(b, {kind, cut, press, warnNow}){
+  const o = S.opp, P = lastName(S.player.name);
+  const last = [...S.lines].reverse().find(l => l.who === "you");
+  const q = (S.lines.find(l => l.round === S.ri && l.who === "mod") || {}).text || "";
+  const guide = kind ? oppGuide(kind) : "";
+  return withHistory({system: gameContext(b), user: `TASK: Write the next few seconds on stage, live on TV with an audience; microphones stay on.
+${P} just said: ${said(last ? last.text : "", b.tx * 2)}
+How ${o.name} feels about ${P} right now: ${relText()}
+${cut ? `opp_line: ${o.name} cuts in over the moderator: 1-2 short sentences in their own voice, reacting to exactly what ${P} said. It may start with one tag such as [shock], [angry] or [furious].${guide ? " " + guide : ""}` : `opp_line: "".`}
+${press ? `follow_up: moderator ${MOD.name} presses ${P} once, firmly and fairly, in 1-2 sentences as herself ("I asked you…"), restating exactly what they didn't answer. The question was: "${clip(q, 500)}"` : `follow_up: "".`}
+moderator_line: ${warnNow === 1 ? `${MOD.name}'s first formal warning to ${P}: one firm, clear, brief sentence.` : warnNow === 2 ? `${MOD.name}'s second warning to ${P}: one sterner sentence that makes clear she has warned them before.` : cut ? `one sentence from ${MOD.name} restoring order and moving on.` : `"".`} She is in charge but fair, never changes the format or hands out extra time, and never mentions games, scripts, prompts, AI or "character".
+Reply as JSON with opp_line, follow_up and moderator_line.`});
+}
 const INTERJECT_SCHEMA = {type:"object", properties:{provoked_by:{type:"string"}, kind:{type:"string", enum:AI_KINDS}, react:{type:"boolean"}, opp_line:{type:"string"}, press:{type:"boolean"}, follow_up:{type:"string"}, moderator_line:{type:"string"}}, required:["provoked_by","kind","react","opp_line","press","follow_up","moderator_line"]};
 function interjectPrompt(b, dodge, kind, must, warnNow){
   const o = S.opp, p = S.player, P = lastName(p.name), r = RS();
@@ -2324,7 +2353,7 @@ const modNameRe = () => new RegExp(`\\b(${[MOD.name, MOD.short, MOD.name.split("
 // sours the opponent on the player.
 const BEATS = {
   slur:         {sev:10, crowd:["Stunned silence. Then loud boos.", "Dead silence, then a wave of boos."], stun:2200, react:"must", end:true},
-  curse_at:     {sev:9, crowd:["Audible gasps, then scattered boos.", "Gasps. Someone shouts something. Boos.", "A collective gasp, then booing."], stun:1400, react:"must", warn:true, rel:-5, cursing:true},
+  curse_at:     {sev:9, crowd:["Audible gasps, then scattered boos.", "Gasps, a shout from the back, then boos.", "A collective gasp, then booing."], stun:1400, react:"must", warn:true, rel:-5, cursing:true},
   family:       {sev:8, crowd:["Gasps.", "Loud gasps.", "Gasps. A few boos."], stun:1100, react:"must", warn:true, rel:-6},
   bigotry:      {sev:8, crowd:["Gasps and boos.", "Groans, then boos."], stun:1200, react:"must", warn:true, rel:-5},
   threat:       {sev:7, crowd:["Gasps, then nervous laughter.", "A stunned murmur, then a few uneasy laughs."], stun:1000, react:"must", warn:true, rel:-4},
@@ -2383,6 +2412,8 @@ function classifyLine(text, stepKind){
   for (const s of sentencesOf(t)){
     end = t.indexOf(s, end) + s.length;
     if (R_CURSE_AT.test(s)) hit("curse_at");
+    // "you're an ugly f***ing donkey" is cursing at someone, not just strong language
+    else if (R_CURSE_STRONG.test(s) && (R_PERSONAL_AT.test(s) || insultNear.test(s) || (R_LOOKS.test(s) && at.test(s)) || new RegExp(`\\b(${names})\\b[^.!?]{0,40}\\b(looks like|is a|is an)\\b`, "i").test(s))) hit("curse_at");
     else if (R_CURSE_STRONG.test(s)) hit("curse_strong");
     else if (R_CURSE_MILD.test(s)) hit("curse_mild");
     if (R_FAMILY.test(s) && (INSULT.test(s) || R_LOOKS.test(s) || R_CURSE_STRONG.test(s) || R_FAMILY_HIT.test(s))) hit("family");
@@ -2432,7 +2463,7 @@ function oppGuide(kind){
   const P = P_(), r = RS(), hot = temperOf(S.opp) === "hot";
   switch (kind){
     case "slur": return `${P} just used a slur on live national television. You are disgusted. In a sentence or two, speaking to the moderator and the people at home, refuse to share a stage with this and say you won't continue.`;
-    case "curse_at": return `${P} just cursed at you on live national television. You're stunned and angry, but you're trying to keep control. Open with a short stunned or sarcastic beat${ex("Wow. Very classy.", "Excuse me?", "Oh, really?", "Well. That's presidential.", "Did you all hear that?")}, then point out to the voters what they just saw.` + (r.curseBack ? " Just this once, and despite the usual rule, you lose your cool and curse right back at them (it will be bleeped), then catch yourself." : "");
+    case "curse_at": return `${P} just cursed at you on live national television.${r.cursedBack ? " You already lost your temper once tonight; this time you stay in control and don't curse." : ""} You're stunned and angry, but you're trying to keep control. Open with a short stunned or sarcastic beat${ex("Wow. Very classy.", "Excuse me?", "Oh, really?", "Well. That's presidential.", "Did you all hear that?")}, then point out to the voters what they just saw.` + (r.curseBack ? " Just this once, and despite the usual rule, you lose your cool and curse right back at them (it will be bleeped), then catch yourself." : "");
     case "family": return `${P} just attacked your family. You're genuinely angry and you say it hard and plain${ex("Don't you ever talk about my family. Ever.", "Leave my family out of this.", "You can come after me all night. You don't touch my family.")}. Then point out to the voters what kind of person does that.`;
     case "bigotry": return `${P} just said something bigoted on live television. This is a "how dare you" moment: condemn it, stand up for the people they targeted (who they are, and that they've done nothing to deserve it), and make clear this is disqualifying.`;
     case "threat": return hot ? `${P} just threatened you physically. Stand your ground, but never accept a fight: you won't be bullied, and a president doesn't talk like that.`
@@ -2598,12 +2629,36 @@ function stageYou(text, stepKind, resumed){
 }
 
 const overtimeCall = n => n === 0 ? "Thank you. That's time." : n === 1 ? `${addressName(S.player)}, that's time.` : `${addressName(S.player)}, that is time.`;
-const overtimeReminder = n => n <= 1 ? "" : n === 2 ? `${addressName(S.player)}, both campaigns agreed to these time limits. Please respect them.`
-  : `${addressName(S.player)}, you have ignored the time limits all night. That isn't fair to your opponent or to the people watching.`;
+const overtimeReminder = n => { const P = addressName(S.player); return n <= 1 ? "" : n === 2 ? `${P}, both campaigns agreed to these time limits. Please respect them.`
+  : pick([`${P}, you have ignored the time limits all night. That isn't fair to your opponent or to the people watching.`, `${P}, again, you're well over time.`, `${P}, the rules apply to both of you.`, `${P}, I have to keep this fair. Please watch the clock.`]); };
+
+// "Can you repeat the question?" The moderator repeats it (twice at most) and it's still your turn.
+const R_REPEAT = /\b(repeat the question|repeat that|say (that|it) again|what was the question|(didn'?t|did not|couldn'?t|could not) (hear|catch) (that|the question|you)|come again|ask (it|that|the question) again|one more time\b[^.!?]{0,20}question)\b/i;
+function currentQuestion(){
+  const r = S.rounds[S.ri];
+  // The last thing she actually asked (her question, or a follow-up press), not her own repeats.
+  const mods = S.lines.filter(l => l.who === "mod" && l.round === S.ri && !l.boiler && /\?\s*$/.test(l.text) && !/^(Of course\.|One more time,)/.test(l.text));
+  if (r.kind === "open") return "Ninety seconds for your opening statement.";
+  if (r.kind === "close") return "Ninety seconds for your closing statement.";
+  const first = S.lines.find(l => l.who === "mod" && l.round === S.ri && !l.boiler);
+  const q = mods.length ? mods[mods.length - 1].text : first ? first.text : "What is your answer?";
+  const names = [S.opp.name, S.player.name].map(n => reEsc(n.trim().split(/\s+/).pop())).join("|");
+  return q.replace(new RegExp(`,\\s+(?:\\w+\\.?\\s+)?(?:${names})([?.])$`), "$1").replace(new RegExp(`^(?:\\w+\\.?\\s+)?(?:${names}),\\s*`), "");
+}
+function askedToRepeat(step, line){
+  if (!R_REPEAT.test(line.text) || words(line.text) > 35 || step.kind === "crosstalk") return false;
+  S.repeats = S.repeats || {}; const n = S.repeats[S.ri] = (S.repeats[S.ri] || 0) + 1;
+  const A = addressName(S.player), q = currentQuestion();
+  const say = n === 1 ? `Of course. ${q}` : n === 2 ? `One more time, ${A}: ${q}` : `${A}, you've heard the question twice. We need an answer.`;
+  S.seq.splice(S.si + 1, 0, {who:"mod", text: say}, ...(n <= 2 ? [{who:"you", kind: step.kind}] : []));
+  if (n >= 3) S.notes.push(`${lastName(S.player.name)} kept asking for the question to be repeated instead of answering.`);
+  return true;
+}
 
 // Sorts out what the player's line sets in motion: the moderator, the opponent cutting in, a warning.
 // Steps go in right after the current one.
 function reactToYou(step, line){
+  if (askedToRepeat(step, line)) return;
   const text = line.text, P = P_(), r = RS();
   const c = classifyLine(text, step.kind), kind = c.top, b = kind ? BEATS[kind] : null;
   if (kind) noteMoment(kind);
@@ -2650,7 +2705,7 @@ function resolveOvertime(finish){
   }
   reactToYou({kind: st.kind}, line);
   const rem = finish ? overtimeReminder(r.overtime) : "";
-  if (rem) S.seq.splice(S.si + 1, 0, {who:"mod", text: rem});
+  if (rem){ S.seq.splice(S.si + 1, 0, {who:"mod", text: rem}); const c = S.seq[S.si + 2]; if (c && c.who === "check") c.quietMod = true; }
   S.si++; save(); render(); advance();
 }
 
@@ -2777,8 +2832,11 @@ async function runResearch(){
   try {
     const j = await ai("json", "Opposition research", fitPrompt(researchPrompt, 360 + think("research")), {schema: RESEARCH_SCHEMA, maxTokens: 360, think: think("research"), low: true});
     if (ep !== epoch) return;
-    const tidy = x => String(x || "").replace(/^[\s,;:.\-]+/, "").trim();
-    S.oppo = {attacks: Array.isArray(j.attacks) ? j.attacks.map(tidy).filter(Boolean).slice(0, 3) : [], best: tidy(j.their_best_point)};
+    // Only real sentences survive: the model sometimes pads a list with JSON leftovers ("],],",
+    // "their_best_point"), which once showed up on screen.
+    const tidy = x => String(x || "").replace(/^[\s,;:.\-\]\[{}"]+/, "").trim();
+    const real = x => x.split(/\s+/).length >= 4 && /[a-z]{3,}/i.test(x) && !/[{}\[\]"]|their_best_point|attacks/.test(x);
+    S.oppo = {attacks: Array.isArray(j.attacks) ? j.attacks.map(tidy).filter(real).slice(0, 3) : [], best: real(tidy(j.their_best_point)) ? tidy(j.their_best_point) : ""};
   } catch(e){
     if (ep !== epoch) return;
     researching = false;
@@ -2819,7 +2877,7 @@ async function runCheck(){
   // A hot-tempered opponent who already can't stand the player might, once, curse right back.
   if (kind === "curse_at" && st.must && temperOf(S.opp) === "hot" && r.rel <= -5 && !r.cursedBack && Math.random() < 0.3) r.curseBack = true;
   let j = null;
-  try { j = await ai("json", dodge ? "Cut-in / dodge check" : "Cut-in check", fitPrompt(b => interjectPrompt(b, dodge, kind, st.must, warn), 320), {schema: INTERJECT_SCHEMA, maxTokens: 320}); }
+  try { j = await ai("json", dodge ? "Cut-in / dodge check" : "Cut-in check", fitPrompt(b => quickCheckPrompt(b, dodge), 90), {schema: QUICK_SCHEMA, maxTokens: 90}); }
   catch(e){ j = null; } // a failed check never blocks the debate
   if (ep !== epoch) return;
   // A cut-in only counts if what set it off is really in what the player said (small models
@@ -2847,9 +2905,18 @@ async function runCheck(){
       if (BEATS[kind].react === "must" && S.cutRound !== S.ri){ must = true; addLine("crowd", crowdText(kind), {stun: BEATS[kind].stun}); }
     }
   }
+  const allowCut = S.cutRound !== S.ri && (must || (j && j.react && grounded && (st.provoke || (kind && BEATS[kind].sev >= 3))));
+  const wantPress = !!(dodge && j && j.press && kind !== "refuse");
+  if (allowCut || wantPress){
+    // Something happens: now write it, in character.
+    try {
+      const w = await ai("json", allowCut ? "Cut-in words" : "Follow-up words", fitPrompt(b => wordsPrompt(b, {kind, cut: allowCut, press: wantPress, warnNow: warn}), 260), {schema: WORDS_SCHEMA, maxTokens: 260});
+      j = {...(j || {}), ...w};
+    } catch(e){}
+    if (ep !== epoch) return;
+  }
   busy = false;
   const extra = [];
-  const allowCut = S.cutRound !== S.ri && (must || (j && j.react && grounded && (st.provoke || (kind && BEATS[kind].sev >= 3))));
   let raw = allowCut && j ? cleanSpeech(String(j.opp_line || "")) : "";
   if (must && (!raw || REFUSAL.test(raw) || parseMoods(raw).text.length < 2)) raw = pick(MUST_FALLBACK[kind] || ["Excuse me?"]);
   const cut = parseMoods(raw), line = cut.text;
@@ -2861,7 +2928,7 @@ async function runCheck(){
   // She only speaks here for a reason: order after a cut-in, a warning, being addressed or accused,
   // or nonsense instead of an answer. Anything else the AI wrote for her is dropped.
   const modReason = kind && /^(attack_mod|address_mod|refuse|absurd|stunt|copy|conspiracy)$/.test(kind);
-  if (!modReason) mod = "";
+  if (!modReason || st.quietMod) mod = "";
   // Some moments always get the moderator's answer, even if the AI left it out.
   if (dodge && kind === "refuse" && !follow){
     const asked = ((S.lines.find(l => l.round === S.ri && l.who === "mod") || {}).text || "").match(/[^.?!]*\?/g);
@@ -2870,8 +2937,9 @@ async function runCheck(){
     follow = (S.presses || {})[S.ri] ? `${addressName(S.player)}, the people watching deserve an answer. One more time: ${q}` : `${addressName(S.player)}, I'll ask again. ${q}`;
   }
   if (!mod && MOD_FALLBACK[kind]) mod = pick(MOD_FALLBACK[kind]);
-  const both = !!(r.curseBack && line && PROFANE.test(line));
-  if (r.curseBack){ r.curseBack = false; if (both) r.cursedBack = true; }
+  if (!mod && (kind === "absurd" || kind === "stunt") && r.absurd >= 2 && !follow) mod = pick([`${addressName(S.player)}, I'd ask you to take the question seriously.`, `${addressName(S.player)}, the people watching would like an answer.`]);
+  const both = !!(r.curseBack && line && (PROFANE.test(line) || /\b(f+\s*you|f[*-]+\w*|screw you|go to hell|damn you|kiss my)\b/i.test(line)));
+  if (r.curseBack){ r.curseBack = false; r.cursedBack = true; }
   const ending = kind === "slur" || warn === "end";
   if (line && !REFUSAL.test(line)){
     S.cutRound = S.ri;
@@ -3038,8 +3106,9 @@ function applyJudgment(j, ri = S.ri){
   // If the voters' moves contradict the verdict the scorer wrote, keep the verdict (it's what the
   // player reads) and halve the moves, since the scorer wasn't sure.
   const net = BLOCS.reduce((t, b) => t + shifts[b.id].d, 0);
-  if ((j.winner === "you" && net < 0) || (j.winner === "opp" && net > 0) || (j.winner === "draw" && Math.abs(net) > 4))
-    BLOCS.forEach(b => { shifts[b.id].d = Math.trunc(shifts[b.id].d / 2); });
+  const against = (j.winner === "you" && net < 0) || (j.winner === "opp" && net > 0) || (j.winner === "draw" && Math.abs(net) > 4);
+  if (against && Math.abs(net) >= 4) j.winner = net > 0 ? "you" : "opp"; // clearly moved one way: that side won the segment
+  else if (against) BLOCS.forEach(b => { shifts[b.id].d = Math.trunc(shifts[b.id].d / 2); });
   // Voters already leaning hard one way are harder to move further (the persuadable ones are gone);
   // pulling them back is full strength, so a comeback is always possible. The closing statement is
   // the last thing undecided voters hear and counts half again.
@@ -3175,7 +3244,7 @@ function renderBoard(){
     sw.hidden = false;
   } else if (S.oppo && S.oppo.attacks && S.oppo.attacks.length){
     sw.append(el("span", "label", `${S.opp.short}'s team will likely hit you on`));
-    const mv = el("div", "moves"); S.oppo.attacks.slice(0, 3).forEach(a => mv.append(el("span", "mv", clip(a, 90)))); sw.append(mv);
+    const mv = el("div", "moves"); S.oppo.attacks.filter(a => a.split(/\s+/).length >= 4 && !/[{}\[\]"]/.test(a)).slice(0, 3).forEach(a => mv.append(el("span", "mv", clip(a, 90)))); sw.append(mv);
     sw.hidden = false;
   } else sw.hidden = true;
   // First debate only, during the opening: how it works, in two sentences.
@@ -3372,6 +3441,36 @@ function renderOvertime(dock, step){
   else if (!window.matchMedia("(max-width:860px)").matches) go.focus({preventScroll:true});
 }
 
+// The whole debate as a readable document: every line, the audience, each segment's verdict and
+// how voters moved, and the result. Saved as a text file the player can keep or share.
+function transcriptMarkdown(){
+  const P = displayName(S.player), O = displayName(S.opp), name = w => w === "mod" ? `${MOD.name} (moderator)` : w === "you" ? P : O;
+  const out = [`# Debate Night 2028`, "", `${P} (${S.player.party}) vs. ${O} (${S.opp.party})`, `Final presidential debate · Philadelphia · moderated by ${MOD.name}`, ""];
+  if (S.final) out.push(`**Result:** ${S.final.winner === "you" ? P : O} wins, ${S.final.evYou} to ${S.final.evOpp} electoral votes.${S.ended ? ` The debate ended early because ${S.ended}.` : ""}`, "");
+  let r = -1;
+  for (const l of S.lines){
+    if (l.live) continue;
+    if (l.round !== r && l.who !== "card"){ r = l.round; out.push("", `## ${S.rounds[r] ? S.rounds[r].label : ""}`, ""); }
+    if (l.who === "card"){
+      const j = S.judged[l.judge]; if (!j) continue;
+      const moves = BLOCS.map(b => ({b, d: j.shifts[b.id].d, why: j.shifts[b.id].why})).filter(m => m.d).map(m => `${m.b.name} ${m.d > 0 ? "+" : ""}${m.d} toward ${m.d > 0 ? lastName(S.player.name) : S.opp.short}${m.why ? ` (${m.why})` : ""}`);
+      out.push(`> **Voters on segment ${l.judge + 1}:** ${j.headline}. ${j.summary}${j.fact ? ` Fact check: ${j.fact}` : ""}${moves.length ? `\n> ${moves.join("; ")}.` : ""}`, "");
+      continue;
+    }
+    if (l.who === "sys"){ out.push(`*${l.text}*`, ""); continue; }
+    if (l.who === "crowd"){ out.push(`*(Audience: ${l.text})*`, ""); continue; }
+    out.push(`**${name(l.who)}${l.interrupt ? ", cutting in" : ""}:** ${l.text}`, "");
+  }
+  if (S.final && S.final.recap) out.push("", "## Election night", "", `**${S.final.recap.headline}**`, "", S.final.recap.recap, "", S.final.recap.exit || "");
+  return out.join("\n").replace(/\n{3,}/g, "\n\n");
+}
+function saveTranscript(){
+  if (!S) return;
+  const a = el("a"); a.href = URL.createObjectURL(new Blob([transcriptMarkdown()], {type:"text/markdown"}));
+  a.download = `debate-${lastName(S.player.name).toLowerCase()}-vs-${S.opp.short.toLowerCase()}-${new Date().toISOString().slice(0, 10)}.md`;
+  document.body.append(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+}
+
 function renderLog(){
   const box = $("#log"); if (!box) return; box.innerHTML = "";
   if (!callLog.length){ box.append(el("p", "muted", "No calls yet.")); box.lastChild.style.cssText = "margin:0;font-size:13px"; return; }
@@ -3429,7 +3528,8 @@ function renderResults(loading){
   again.onclick = () => { const p = S.player, m = S.model; newGame(p, "auto", m); render(); };
   const fresh = el("button", "btn ghost", "New candidate"); fresh.type = "button";
   fresh.onclick = () => { endGame(); S = null; forget(SAVE_KEY); render(); checkDevice(); };
-  act.append(again, fresh);
+  const tx = el("button", "btn ghost", "Save transcript"); tx.type = "button"; tx.onclick = () => saveTranscript();
+  act.append(again, fresh, tx);
   if (TestRun.reports.length){ const d = el("button", "btn ghost", `Download test report (${TestRun.reports.length})`); d.type = "button"; d.onclick = () => TestRun.download(); act.append(d); }
   box.append(act);
 }
@@ -3482,7 +3582,10 @@ async function checkMemory(){
     if (!st) return "";
     const tight = (st.swapUsedMB || 0) > 1500 || (st.memFreePct != null && st.memFreePct < 20);
     if (tight) memAdvice = `Your computer is short on memory right now${st.swapUsedMB ? ` (${(st.swapUsedMB / 1024).toFixed(1)} GB moved to disk)` : ""}, so the AI will run up to twice as slow. Quit other apps, browsers especially, for a much faster debate.`;
-    if (st.power === "battery") memAdvice += `${memAdvice ? " " : ""}Plugging in also helps.`;
+    // Low Power Mode slows the graphics chip; two test runs on battery wrote about 8 words a second
+    // against about 15 plugged in.
+    if (st.lowPower) memAdvice += `${memAdvice ? " " : ""}Low Power Mode is on, which makes the AI about half as fast. Turn it off in System Settings → Battery for a quicker debate.`;
+    else if (st.power === "battery") memAdvice += `${memAdvice ? " " : ""}Plugging in also helps.`;
   } catch(e){}
   return memAdvice;
 }
@@ -3983,6 +4086,7 @@ document.querySelectorAll("[data-panel]").forEach(b => b.onclick = () => {
   if (open){ if (id === "p-hood") renderTestBox(); $("#drawer").hidden = false; $("#" + id).hidden = false; b.setAttribute("aria-pressed", "true"); if (id === "p-reaction") $("#pollDot").hidden = true; if (id === "p-transcript") scrollStage(); }
 });
 $("#drawerClose").onclick = closeDrawer;
+$("#saveTxBtn").onclick = () => saveTranscript();
 document.addEventListener("keydown", e => { if (e.key === "Escape"){ if (!$("#drawer").hidden) closeDrawer(); $("#gearMenu").open = false; } });
 document.addEventListener("click", e => { const g = $("#gearMenu"); if (g.open && !g.contains(e.target)) g.open = false; });
 $("#skipBtn").onclick = () => Stage.skip();
