@@ -1,6 +1,7 @@
 // Electron shell: one window running the game, plus the local AI service.
 const { app, BrowserWindow, ipcMain, shell, Menu, powerSaveBlocker, powerMonitor } = require("electron");
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const { execFile } = require("child_process");
 const { AIService } = require("./ai-service");
@@ -57,7 +58,8 @@ ipcMain.handle("ai:degrade", wrap(id => ai.degrade(id)));
 ipcMain.handle("ai:resetSpeed", wrap(id => ai.resetSpeed(id)));
 ipcMain.handle("ai:remove", wrap(id => ai.removeModel(id)));
 ipcMain.handle("app:open", wrap(url => { if (/^https:\/\//.test(url)) return shell.openExternal(url); }));
-ipcMain.handle("app:log", wrap(() => logTail()));
+ipcMain.handle("app:log", wrap(n => logTail(Math.min(Number(n) || 80, 2000))));
+ipcMain.handle("app:stats", wrap(() => machineStats()));
 ipcMain.handle("app:openLog", wrap(() => shell.showItemInFolder(logPath)));
 ipcMain.handle("app:awake", wrap(on => stayAwake(!!on)));
 ipcMain.handle("app:note", wrap(line => note("game: " + String(line).slice(0, 500))));
@@ -127,6 +129,33 @@ process.on("uncaughtException", e => { note("Unexpected error (the game kept run
 process.on("unhandledRejection", e => { note("Unhandled error (the game kept running): " + (e && e.stack || e)); });
 
 app.on("second-instance", () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
+// A snapshot of how the computer is coping, for test reports: free memory, swap (a Mac that is
+// swapping slows the AI a lot), and how hard the AI engine and the game window are working.
+function sh(cmd, args) { return new Promise(res => execFile(cmd, args, { timeout: 3000 }, (err, out) => res(err ? "" : String(out || "").trim()))); }
+async function machineStats() {
+  const st = { totalMemGB: +(os.totalmem() / 2 ** 30).toFixed(1), freeMemGB: +(os.freemem() / 2 ** 30).toFixed(2), load1: +os.loadavg()[0].toFixed(2) };
+  try {
+    const tab = app.getAppMetrics().find(p => p.type === "Tab");
+    if (tab) { st.gameCpu = Math.round(tab.cpu.percentCPUUsage); st.gameMemMB = Math.round((tab.memory.workingSetSize || 0) / 1024); }
+  } catch {}
+  const pid = ai.proc && ai.proc.pid;
+  if (pid && process.platform !== "win32") {
+    const [cpu, rss] = (await sh("ps", ["-o", "%cpu=,rss=", "-p", String(pid)])).split(/\s+/);
+    if (cpu) { st.engineCpu = Math.round(+cpu); st.engineMemGB = +(+rss / 1048576).toFixed(2); }
+  }
+  if (process.platform === "darwin") {
+    const m = /used = ([\d.]+)M/.exec(await sh("sysctl", ["-n", "vm.swapusage"]));
+    if (m) st.swapUsedMB = Math.round(+m[1]);
+    const pr = /System-wide memory free percentage: (\d+)%/.exec(await sh("memory_pressure", ["-Q"]));
+    if (pr) st.memFreePct = +pr[1];
+    const th = await sh("pmset", ["-g", "therm"]);
+    const sp = /CPU_Speed_Limit\s*=\s*(\d+)/.exec(th); if (sp) st.cpuSpeedLimit = +sp[1];
+    const batt = await sh("pmset", ["-g", "batt"]);
+    st.power = /AC Power/.test(batt) ? "plugged in" : /Battery Power/.test(batt) ? "battery" : "";
+  }
+  return st;
+}
+
 // Every couple of minutes (every minute during a test run), write down how hard each part of the
 // game is working. A runaway process shows up here as a big number.
 function cpuCheck() {
@@ -136,7 +165,8 @@ function cpuCheck() {
     if (!pid || process.platform === "win32") return note("CPU: " + m.join(", "));
     execFile("ps", ["-o", "%cpu=,rss=", "-p", String(pid)], (err, out) => {
       const [cpu, rss] = String(out || "").trim().split(/\s+/);
-      note(`CPU: ${m.join(", ")}${cpu ? `, AI engine ${Math.round(+cpu)}% using ${(+rss / 1048576).toFixed(1)} GB` : ""}`);
+      const swap = process.platform === "darwin" ? (() => { try { return /used = ([\d.]+)M/.exec(require("child_process").execFileSync("sysctl", ["-n", "vm.swapusage"], { timeout: 2000 }).toString())?.[1]; } catch { return null; } })() : null;
+      note(`CPU: ${m.join(", ")}${cpu ? `, AI engine ${Math.round(+cpu)}% using ${(+rss / 1048576).toFixed(1)} GB` : ""} · free memory ${(os.freemem() / 2 ** 30).toFixed(1)} GB${swap ? ` · swap used ${Math.round(+swap)} MB` : ""}`);
     });
   } catch {}
 }
