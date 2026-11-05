@@ -165,8 +165,13 @@ function cpuCheck() {
     if (!pid || process.platform === "win32") return note("CPU: " + m.join(", "));
     execFile("ps", ["-o", "%cpu=,rss=", "-p", String(pid)], (err, out) => {
       const [cpu, rss] = String(out || "").trim().split(/\s+/);
-      const swap = process.platform === "darwin" ? (() => { try { return /used = ([\d.]+)M/.exec(require("child_process").execFileSync("sysctl", ["-n", "vm.swapusage"], { timeout: 2000 }).toString())?.[1]; } catch { return null; } })() : null;
-      note(`CPU: ${m.join(", ")}${cpu ? `, AI engine ${Math.round(+cpu)}% using ${(+rss / 1048576).toFixed(1)} GB` : ""} · free memory ${(os.freemem() / 2 ** 30).toFixed(1)} GB${swap ? ` · swap used ${Math.round(+swap)} MB` : ""}`);
+      // macOS keeps "free" memory near zero on purpose (it caches files), so the honest number there
+      // is memory_pressure's free percentage, plus how much has been pushed out to swap.
+      const run = (c, a) => { try { return require("child_process").execFileSync(c, a, { timeout: 2000 }).toString(); } catch { return ""; } };
+      const mac = process.platform === "darwin";
+      const swap = mac ? /used = ([\d.]+)M/.exec(run("sysctl", ["-n", "vm.swapusage"]))?.[1] : null;
+      const freePct = mac ? /System-wide memory free percentage: (\d+)%/.exec(run("memory_pressure", ["-Q"]))?.[1] : null;
+      note(`CPU: ${m.join(", ")}${cpu ? `, AI engine ${Math.round(+cpu)}% using ${(+rss / 1048576).toFixed(1)} GB` : ""} · ${freePct ? `memory ${freePct}% free` : `free memory ${(os.freemem() / 2 ** 30).toFixed(1)} GB`}${swap ? ` · swap used ${Math.round(+swap)} MB` : ""}`);
     });
   } catch {}
 }

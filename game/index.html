@@ -3884,7 +3884,7 @@ const TestRun = {
       const lo = (k) => Math.min(...mach.map(x => x[k]).filter(v => typeof v === "number"));
       const hi = (k) => Math.max(...mach.map(x => x[k]).filter(v => typeof v === "number"));
       const f = (k, unit, fn) => mach.some(x => typeof x[k] === "number") ? `${+fn(k).toFixed(1)}${unit}` : "";
-      out.push("", "Computer during the debate (sampled after each AI call): " + [f("freeMemGB", " GB free memory at lowest", lo), f("swapUsedMB", " MB of swap at most", hi), f("memFreePct", "% memory free at lowest (macOS)", lo),
+      out.push("", "Computer during the debate (sampled after each AI call): " + [mach.some(x => typeof x.memFreePct === "number") ? "" : f("freeMemGB", " GB free memory at lowest", lo), f("swapUsedMB", " MB of swap at most", hi), f("memFreePct", "% memory free at lowest (macOS)", lo),
         f("engineMemGB", " GB used by the AI at most", hi), f("gameMemMB", " MB used by the game window at most", hi), f("cpuSpeedLimit", "% CPU speed limit lowest (100 = no heat throttling)", lo)].filter(Boolean).join(" · ")
         + (mach.some(x => x.power) ? ` · power: ${[...new Set(mach.map(x => x.power).filter(Boolean))].join(", ")}` : ""));
     }
@@ -3922,7 +3922,7 @@ const TestRun = {
     if (sys) out.push("<details><summary>Shared system prompt</summary>", "", "```", sys.prompt.split("\n\nUSER\n")[0], "```", "</details>", "");
     this.calls.forEach(c => {
       out.push(`#### ${c.label} · ${(c.ms / 1000).toFixed(1)} s${c.error ? " · ERROR " + c.error : ""}${c.speed ? " · " + c.speed.replace(/\n/g, " ") : ""}`);
-      out.push(`_at ${c.at} s · ${c.kind}${c.background ? " (background)" : ""}${c.playerWaiting ? " · player was waiting" : ""} · in line ${((c.queueMs || 0) / 1000).toFixed(1)} s${c.firstMs != null ? ` · first word after ${(c.firstMs / 1000).toFixed(1)} s` : ""} · ${c.msgs || "?"} messages, ${c.promptChars || "?"} characters · max ${c.maxTokens} tokens${c.truncated ? " · **HIT LENGTH CAP**" : ""}${c.finish ? ` · ended: ${c.finish}` : ""}${c.retried ? " · retried after an engine restart" : ""}${c.jsonRetry ? ` · JSON redone ${c.jsonRetry}x` : ""}${c.machine ? ` · free memory ${(+c.machine.freeMemGB).toFixed(1)} GB${c.machine.swapUsedMB != null ? `, swap ${c.machine.swapUsedMB} MB` : ""}${c.machine.engineMemGB != null ? `, AI using ${c.machine.engineMemGB} GB at ${c.machine.engineCpu}% CPU` : ""}` : ""}_`);
+      out.push(`_at ${c.at} s · ${c.kind}${c.background ? " (background)" : ""}${c.playerWaiting ? " · player was waiting" : ""} · in line ${((c.queueMs || 0) / 1000).toFixed(1)} s${c.firstMs != null ? ` · first word after ${(c.firstMs / 1000).toFixed(1)} s` : ""} · ${c.msgs || "?"} messages, ${c.promptChars || "?"} characters · max ${c.maxTokens} tokens${c.truncated ? " · **HIT LENGTH CAP**" : ""}${c.finish ? ` · ended: ${c.finish}` : ""}${c.retried ? " · retried after an engine restart" : ""}${c.jsonRetry ? ` · JSON redone ${c.jsonRetry}x` : ""}${c.machine ? ` · ${c.machine.memFreePct != null ? `memory ${c.machine.memFreePct}% free` : `free memory ${(+c.machine.freeMemGB).toFixed(1)} GB`}${c.machine.swapUsedMB != null ? `, swap ${c.machine.swapUsedMB} MB` : ""}${c.machine.engineMemGB != null ? `, AI using ${c.machine.engineMemGB} GB at ${c.machine.engineCpu}% CPU` : ""}` : ""}_`);
       if (c.reasoning) out.push("Thinking:", "```", c.reasoning, "```");
       out.push("<details><summary>Prompt</summary>", "", "```", c.prompt.split("\n\nUSER\n").pop(), "```", "</details>", "", "Reply:", "```", c.output || "(empty)", "```", "");
     });

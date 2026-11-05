@@ -185,18 +185,19 @@ class AIService {
   // this size (llama.cpp #23752), and newer model uploads would otherwise switch it on silently.
   argSets(m) {
     const sets = [];
-    // On Macs the model's memory is locked in place, so when other apps crowd the memory, macOS
-    // swaps them out instead of the AI (a test on an 8 GB Mac with 4 GB of swap in use ran at
-    // half speed because the model kept being paged out). If locking isn't allowed, the engine
-    // just carries on without it.
-    const lock = process.platform === "darwin" ? ["--mlock"] : [];
-    sets.push(["-ngl", "all", "-fa", "on", ...lock]);
-    sets.push(["-ngl", "all", "-fa", "auto", ...lock]);
+    // On Macs the model's memory is locked in place first, so when other apps crowd the memory,
+    // macOS swaps them out instead of the AI (a test on an 8 GB Mac with 4 GB of swap in use ran at
+    // half speed). This engine spells it "--load-mode mmap+mlock" ("--mlock" was refused, and in
+    // 0.4.1 that refusal fell all the way to the slow processor-only mode). If locking can't start,
+    // the next set is the same thing without it.
+    if (process.platform === "darwin") sets.push(["-ngl", "all", "-fa", "on", "-lm", "mmap+mlock"]);
+    sets.push(["-ngl", "all", "-fa", "on"]);
+    sets.push(["-ngl", "all", "-fa", "auto"]);
     sets.push(["-ngl", "0", "-fa", "auto"]); // no usable graphics chip: run on the processor
     return sets;
   }
   // Apple Silicon always has a graphics chip the engine can use, so the slow processor-only
-  // mode is never right there; it can only be a leftover from a one-off failure.
+  // mode is never right there: it's never started, and never remembered.
   lowestSet(m) { const n = this.argSets(m).length; return process.platform === "darwin" && process.arch === "arm64" ? n - 2 : n - 1; }
 
   // Starts, restarts and stops run one at a time, so two engines can never be launching at once.
@@ -216,15 +217,15 @@ class AIService {
     const sets = this.argSets(m);
     // Older versions also remembered slow-downs caused by one-off hiccups (like the computer
     // sleeping). Forget those once, so the fastest settings get a fresh try.
-    if (man.settingsV !== 3) {
+    if (man.settingsV !== 4) {
       const all = await this.manifest();
-      if (all[id]) { if (all[id].settings) this.note(`Clearing an old slow-down (settings level ${all[id].settings}) for a fresh try at full speed.`); all[id].settings = 0; all[id].settingsV = 3; await this.saveManifest(all); }
+      if (all[id]) { if (all[id].settings) this.note(`Clearing an old slow-down (settings level ${all[id].settings}) for a fresh try at full speed.`); all[id].settings = 0; all[id].settingsV = 4; await this.saveManifest(all); }
       man.settings = 0;
     }
     // Start from the settings that worked last time, so a fallback is only paid for once.
     const first = Math.min(Math.max(0, man.settings || 0), this.lowestSet(m));
     let lastErr = null;
-    for (let i = first; i < sets.length; i++) {
+    for (let i = first; i <= this.lowestSet(m); i++) {
       try {
         await this.launch(m, modelPath, sets[i]);
         this.server.settingsIndex = i;
