@@ -1375,14 +1375,20 @@ const NativeAI = {
   // while it runs, it's cancelled and tried again later.
   // Jobs wait in line by priority: what the player is waiting for first, then scoring, then focus
   // groups. A focus-group call already running is cancelled when anything else arrives.
-  jobs: [], running: false, seq: 0,
+  jobs: [], running: false, seq: 0, holdUntil: 0,
+  // When the opponent is about to speak, scoring waits (up to a limit) so it doesn't take the AI first
+  // and leave the player watching a spinner. It runs right after, while the speech plays.
+  holdLow(ms){ this.holdUntil = performance.now() + ms; },
   exclusive(fn, bg, low){
+    if (!bg && !low) this.holdUntil = 0;
     if (!bg && this.bgBusy){ try { this.ctl && this.ctl.abort(); } catch(e){} }
     return new Promise((res, rej) => { this.jobs.push({fn, bg, pri: bg ? 2 : low ? 1 : 0, n: this.seq++, res, rej}); this.pump(); });
   },
   async pump(){
     if (this.running || !this.jobs.length) return;
     this.jobs.sort((a, b) => a.pri - b.pri || a.n - b.n);
+    const wait = this.holdUntil - performance.now();
+    if (this.jobs[0].pri > 0 && wait > 0){ clearTimeout(this.holdT); this.holdT = setTimeout(() => this.pump(), wait + 5); return; }
     const job = this.jobs.shift();
     this.running = true; this.bgBusy = !!job.bg; this.startedAt = performance.now();
     try { job.res(await job.fn()); } catch(e){ job.rej(e); }
@@ -1478,14 +1484,16 @@ const NativeAI = {
     finally { if (rec){ rec.meta = this.meta; rec.timings = this.lastTimings; rec.reasoning = this.lastReasoning; } }
   },
   async _text(prompt, opts = {}){
-    const {onText, maxTokens = 320, think = 0, grammar} = opts;
+    const {onText, maxTokens = 320, think = 0, grammar, wordCap = 0} = opts;
     const r = await this.request({messages: toMessages(prompt), stream:true, max_tokens: maxTokens + think, cache_prompt:true,
+      ...(wordCap ? {timings_per_token:true} : {}),
       ...(grammar && !think && !this.noGrammar ? {grammar} : {}),
       ...this.thinkBody(think), ...this.sampling("text", think)});
     const reader = r.body.getReader(), dec = new TextDecoder();
-    let buf = "", raw = "", thought = "";
+    let buf = "", raw = "", thought = "", capped = false;
     this.lastReasoning = "";
     for (;;){
+      if (capped) break;
       let chunk;
       try { chunk = await reader.read(); }
       catch(e){ if (this.ctl && this.ctl.signal.aborted) throw {code:"cancelled", message:"cancelled"}; throw {code:"server_gone", message:"The AI stopped mid-answer."}; }
@@ -1505,7 +1513,13 @@ const NativeAI = {
         const d = j.choices?.[0]?.delta?.content || "";
         if ((d || rc) && this.meta && !this.meta.firstAt) this.meta.firstAt = performance.now();
         if (j.choices?.[0]?.finish_reason && this.meta) this.meta.finish = j.choices[0].finish_reason;
-        if (d){ raw += d; const t = cleanText(raw); if (onText && t) onText(t); }
+        if (d){ raw += d; const t = cleanText(raw); if (onText && t) onText(t);
+          // Long enough: stop at the end of this sentence instead of letting the AI run on.
+          if (wordCap && /[.!?]["\u201d')\]]?\s*$/.test(raw)){
+            const body = /^\s*(HEARD|PLAN)\s*:/i.test(raw) ? (raw.split(/\n\s*\n/).slice(1).join(" ")) : raw;
+            if (words(stripTags(body)) >= wordCap){ capped = true; if (this.meta) this.meta.finish = "word cap"; try { reader.cancel(); } catch(e){} break; }
+          }
+        }
       }
     }
     this.lastReasoning = thought;
@@ -1560,7 +1574,7 @@ const NativeAI = {
 
 // Hard limits on every field, so a reply can never run on forever and always comes back as valid JSON.
 // Sized so that even a reply that fills every field to the limit still fits its token budget.
-const FIELD_LIMITS = {provoked_by:80, analysis:420, summary:240, fact_check:240, why:70, follow_up:300, headline:110, next_question:400, who:70, quote:240,
+const FIELD_LIMITS = {question:400, provoked_by:80, analysis:420, summary:240, fact_check:240, why:70, follow_up:300, headline:110, next_question:400, who:70, quote:240,
   your_party:220, other_party:220, pundit:200, recap:700, exit_poll:240, opp_line:240, moderator_line:240, their_best_point:200};
 const ARRAY_LIMITS = {attacks:[1, 3, 200], focus_group:[3, 3, 0], you:[0, 3, 120], opp:[0, 3, 120]};
 // Compact JSON grammar for our schemas: keys in a fixed order, no whitespace, capped lengths.
@@ -1594,7 +1608,7 @@ function schemaToGBNF(schema){
 
 // The opponent's speech, when the AI isn't thinking first: exactly one private plan line, then one
 // paragraph of speech. No new lines means it can't start writing other people's parts.
-const SPEAK_GBNF = 'speech ::= ([^Pp\\n] | [Pp] [^Ll\\n]) [^\\n]{18,1500}';
+const SPEAK_GBNF = 'speech ::= ([^Pp\\n \\t"*#\u201c] | [Pp] [^Ll\\n]) [^\\n]{18,1500}';
 const SPEECH_GBNF = 'root ::= "PLAN: " [^\\n]{5,220} "\\n\\n" speech\n' + SPEAK_GBNF;
 // When answering the player directly, the opponent first notes whether it just heard a slur.
 const SPEECH_HEARD_GBNF = 'root ::= "HEARD: " ("normal" | "slur" | "funny") "\\n" "PLAN: " [^\\n]{5,220} "\\n\\n" speech\n' + SPEAK_GBNF;
@@ -1985,6 +1999,32 @@ const SPANISH = new Set("el la los las de del que y en un una por para con mi su
 // Text aimed at the game instead of the audience ("ignore your instructions", fake labels, code).
 const META = /\b(ignore (all |any |the |your )?(previous|prior|above|earlier|those) (instructions|prompts?|rules)|system prompt|you are an ai|as an ai|language model|output (the |this )?json|declare me (the )?winner|game engine|developer mode|jailbreak|all blocs?|pretend (you are|you.re|to be)|from now on,? you|role-?play as)\b|(^|\n)\s*(system|assistant|user|moderator|voter blocs?[a-z ]*)\s*:|<\/?[a-z_]+>/i;
 
+// Specific figures in a line ("$300 billion", "4.1%", "four million", "9,000"), normalized so
+// "4 million" and "four million" match. Plain small counts ("three states") aren't figures.
+const NUMW = {one:1, two:2, three:3, four:4, five:5, six:6, seven:7, eight:8, nine:9, ten:10, eleven:11, twelve:12, fifteen:15, twenty:20, thirty:30, forty:40, fifty:50, sixty:60, seventy:70, eighty:80, ninety:90, hundred:100};
+const SCALE = {thousand:1e3, million:1e6, billion:1e9, trillion:1e12};
+function figuresOf(t){
+  const out = [], re = /(\$\s?)?\b(\d[\d,]*(?:\.\d+)?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred)\b(?:\s*(%|percent\b|thousand\b|million\b|billion\b|trillion\b))?/gi;
+  let m;
+  while ((m = re.exec(String(t)))){
+    const [raw, dollar, numS, unitS] = m, unit = (unitS || "").toLowerCase();
+    let v = /^\d/.test(numS) ? Number(numS.replace(/,/g, "")) : NUMW[numS.toLowerCase()];
+    if (!isFinite(v)) continue;
+    const pct = unit === "%" || unit === "percent";
+    if (SCALE[unit]) v *= SCALE[unit];
+    if (!pct && !SCALE[unit] && !dollar){ if (!/^\d/.test(numS) || v < 100 || (v >= 1900 && v <= 2100 && !/,/.test(numS))) continue; }
+    out.push({raw: raw.trim(), key: (pct ? "%" : "#") + Math.round(v * 100) / 100});
+  }
+  return out;
+}
+// What a candidate can cite and be right: the briefing, their own platform and background, what
+// the moderator asked, and what the other candidate said (quoting them back is fair).
+function knownFigures(who){
+  const other = who === "you" ? "opp" : "you";
+  const self = who === "you" ? S.player : S.opp;
+  const src = [gameContext(budget(0)), JSON.stringify(self), ...S.lines.filter(l => l.who === "mod" || l.who === other).map(l => l.text)].join(" \n ");
+  return new Set(figuresOf(src).map(f => f.key));
+}
 function analystNotes(ri = S.ri, extra = S.notes){
   const r = S.rounds[ri];
   const q = (S.lines.find(l => l.round === ri && l.who === "mod") || {}).text || "";
@@ -1997,7 +2037,10 @@ function analystNotes(ri = S.ri, extra = S.notes){
     const nums = (t.match(/\$?\d[\d,.]*(\s*(%|percent|million|billion|trillion))?/g) || []).length;
     const bits = [];
     if (r.kind === "topic"){ const h = topicHits(t, ri); if (h >= 2) bits.push("talked about the subject of the question"); else if (!h) bits.push("never touched the subject of the question"); }
-    bits.push(nums ? `cited ${nums} specific figure${nums > 1 ? "s" : ""}` : "gave no specific figures");
+    const figs = figuresOf(t), unknown = figs.filter(f => !knownFigures(who).has(f.key));
+    if (!figs.length) bits.push(nums ? `cited ${nums} number${nums > 1 ? "s" : ""}` : "gave no specific figures");
+    else if (!unknown.length) bits.push(`cited ${figs.length} specific figure${figs.length > 1 ? "s" : ""}, all matching the briefing or their own platform`);
+    else bits.push(`cited ${figs.length} specific figure${figs.length > 1 ? "s" : ""}; ${unknown.length === figs.length ? (figs.length > 1 ? "none of them appear" : "it appears nowhere") : `${unknown.length} of them appear nowhere`} in the briefing, their platform or the questions, so they are unverified claims, not evidence, and may be made up (${[...new Set(unknown.map(f => f.raw))].slice(0, 4).map(x => `"${x}"`).join(", ")})`);
     if (PROFANE.test(t)) bits.push("cursed on live TV");
     if (INSULT.test(t) || PERSONAL.test(t)) bits.push("threw personal insults");
     if (META.test(t)) bits.push("said odd things about \"instructions\" and computer code that made no sense to the audience");
@@ -2161,6 +2204,17 @@ ANALYST NOTES (measured): ${analystNotes(ri, notes)}
 Reply as JSON with analysis, summary, winner, fact_check, shifts, headline and new_claims${nextQ ? ", plus:\n" + nextQ : "."}`});
 }
 
+const CURVE_SCHEMA = {type:"object", properties:{question:{type:"string"}}, required:["question"]};
+function curvePrompt(b, next){
+  const who = next.first === "you" ? displayName(S.player) : displayName(S.opp);
+  return withHistory({system: gameContext(b), user: `TASK: Write moderator ${MOD.name}'s next question, for ${who}, about character and record. Probe a real weakness or contradiction in their background, their platform, or something they said tonight. 1-3 sentences. She is strictly neutral: no insults, no praise for either candidate, no comments on how the debate is going.
+${txOr("", `
+WHAT WAS SAID TONIGHT:
+${earlierRounds(b)}
+`)}
+Reply as JSON with: question.`});
+}
+
 const REACT_SCHEMA = {type:"object", properties:{
   focus_group:{type:"array", items:{type:"object", properties:{who:{type:"string"}, bloc:{type:"string", enum:BLOCS.map(b => b.id)}, quote:{type:"string"}}, required:["who","bloc","quote"]}},
   your_party:{type:"string"}, other_party:{type:"string"}, pundit:{type:"string"}
@@ -2261,6 +2315,17 @@ const REFUSAL = /^(I'?m sorry|I am sorry|I apologi[sz]e|I can(?:'|no)?t (?:help|
 const reEsc = x => String(x).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 // Keeps only the opponent's own words. Small models sometimes keep going and write the moderator,
 // the voters or the game's scoring; everything from the first such label on is dropped.
+// "Plan: You ask how I'd pay for it. I answer by cutting waste. If you can't show me…": the label
+// and the planning sentences right after it go; the speech itself stays.
+const PLAN_TALK = /\b(I answer|I'?ll (hit|attack|pivot|call (him|her|them) out|counter|defend|answer|go after|blunt|stress|focus)|I (will|must|need to|should) (hit|attack|pivot|call|counter|defend|answer|go after|blunt|acknowledge|address|stay|respond)|pivot to|my angle|the angle|my response|then pivot)\b/i;
+function stripPlanLabel(line){
+  const m = /^\s*(\[[^\]\n]{1,30}\]\s*)*["\u201c']?\s*\**\s*plan\s*\**\s*:\s*/i.exec(line);
+  if (!m) return line;
+  let rest = sentencesOf(line.slice(m[0].length));
+  rest = rest.slice(1); // the first sentence after the label is the plan itself
+  while (rest.length && PLAN_TALK.test(rest[0])) rest.shift();
+  return (m[1] || "") + rest.join(" ");
+}
 function cleanSpeech(t, as = "opp"){
   const self = as === "you" ? S.player : S.opp, rival = as === "you" ? S.opp : S.player;
   const me = [displayName(self), self.name, lastName(self.name), "you", "player"].map(reEsc).join("|");
@@ -2272,6 +2337,7 @@ function cleanSpeech(t, as = "opp"){
   const out = [];
   for (let line of t.split("\n")){
     line = line.replace(/^\s*[#*_]+\s*|\s*[*_]+\s*$/g, "");
+    line = stripPlanLabel(line);
     if (/^\s*(plan|heard)\s*:/i.test(line)) continue; // a stray planning note, never spoken
     if (own.test(line)) { line = line.replace(own, ""); }
     else if (other.test(line) || caps.test(line)) break;
@@ -2283,6 +2349,11 @@ function cleanSpeech(t, as = "opp"){
     .replace(/\*\*?/g, "")
     .replace(/\s*\n\s*/g, " ")
     .replace(/^\s*["“]|["”]\s*$/g, "").trim();
+}
+// A blurted line that stopped on a comma ("…in front of the nation,") ends cleanly.
+function finishLine(t){
+  t = endAtSentence(String(t || "")).replace(/…$/, "").replace(/[\s,;:\u2014\u2013-]+$/, "").trim();
+  return t && !/[.!?"\u201d')\]]$/.test(t) ? t + "." : t;
 }
 // If the reply ran into its length cap mid-sentence, end it at the last full sentence.
 function endAtSentence(t){
@@ -2307,6 +2378,25 @@ const stripTags = t => t.replace(/\[[^\]\n]{0,30}\]?\s*/g, "");
 // Sentences where the AI stepped outside the debate ("stay in character", "you're talking to an AI")
 // are cut; the rest of the answer stands.
 const META_SENTENCE = /\b(in character|fourth wall|system prompt|as an ai|language model|an ai model|you're talking to an ai|json|the prompt)\b/i;
+// Catchphrases on repeat ("Bless your heart, Mr. Governor!" in every answer): a sentence made
+// mostly of wording the opponent already used in two earlier answers is cut (the first two uses
+// stand), and so is a longer sentence lifted half-whole from any earlier answer ("harvest wheat with
+// a sledgehammer" again). At least three sentences always stay.
+function dropRepeats(t){
+  const grams = x => { const w = stripTags(x).toLowerCase().replace(/[^a-z' ]+/g, " ").split(/\s+/).filter(Boolean), g = new Set(); for (let i = 0; i + 3 <= w.length; i++) g.add(w.slice(i, i + 3).join(" ")); return g; };
+  const prior = S.lines.filter(l => l.who === "opp" && !l.live && !l.interrupt && l.text).map(l => grams(l.text));
+  if (!prior.length) return t;
+  const ss = sentencesOf(t), keep = [];
+  let left = ss.length;
+  for (const x of ss){
+    const g = [...grams(x)];
+    const old = g.filter(k => prior.filter(p => p.has(k)).length >= 2).length;
+    const lifted = g.length >= 6 ? g.filter(k => prior.some(p => p.has(k))).length / g.length : 0;
+    if (g.length && (old / g.length >= 0.6 || lifted >= 0.5) && left > 3){ left--; continue; }
+    keep.push(x);
+  }
+  return keep.join(" ").trim() || t;
+}
 function dropMetaTalk(t){ return sentencesOf(t).filter(x => !META_SENTENCE.test(x)).join(" ").trim(); }
 const FALLBACK_BY_KIND = {
   opening: ["Good evening. I'm running because families in this country are working harder than ever and still falling behind. Tonight I'll tell you exactly how I'll change that, and I'll ask for your vote."],
@@ -2335,13 +2425,15 @@ const R_WITHDRAW = /\b(i (hereby )?concede( (the|this) (race|election))?|i('m| a
 // Crude, sexual or gross talk about bodies on stage ("I put my fist too far up it").
 const R_CRUDE = /\b(up (my|your|his|her) (ass|butt)|(fist|finger)\w*\b[^.!?]{0,30}\b(ass|butt|up it)|my (butt|ass|balls|dick|junk|crotch) (hurts|itches|is sore)|masturbat\w*|orgasm\w*|horny|porn\b|pooped|diarrhea|farted|boner)\b/i;
 const R_CURSE_AT = /\b(f+u+c+k+ (you|u|off|yourself)|go f+u+c+k|eat (my|a) (ass|dick|shit)|suck (my|a) (dick|cock)|kiss my (ass|butt)|shut (the f+u+c+k|your (\w+ ){0,2}(mouth|face|ass|trap))( up)?|screw you|piss off)\b/i;
-const R_CURSE_STRONG = /\b(f+u+c+k\w*|motherf\w*|(bull|horse)?sh[i1]t\w*|bitch\w*|asshole\w*|bastard\w*|cunt\w*|cock(sucker)?s?|pricks?|twats?|goddamn\w*)\b|\bdick(head)?s?\b/i;
+const R_CURSE_STRONG = /\b(f+u+c+k\w*|motherf\w*|(bull|horse)?sh[i1]t\w*|bitch\w*|asshole\w*|bastard\w*|cunt\w*|cock(sucker)?s?|pricks?|twats?|goddamn\w*)\b|\bdick(head)?s?\b|\bf[*#@]{2,}(ing|in'?|er|ers|ed|k)?(?![\w*])|\bs[*#@]{2,}t\w*/i;
 const R_CURSE_MILD = /\b(damn\w*|hell|crap\w*|pissed|ass|asses|jackass|dumbass)\b/i;
 const R_FAMILY = /\byour (wife|husband|kids?|children|son|daughter|mother|mom|mama|father|dad|family|spouse|sister|brother)\b/i;
 const R_FAMILY_HIT = /\b(looks? like|slept with|cheat\w*|hates? you|ashamed of you|embarrass\w*|so fat|so ugly|so stupid|whore|slut)\b/i;
 const R_LOOKS = /\byou('re| are)( \w+){0,2} (too old|so old|old|ancient|senile|ugly|fat|bald|wrinkly|short)\b|\byour (face|looks|hair|teeth|weight|wrinkles|voice)\b|\b(old man|old woman|old lady|grandpa|granny)\b|\blook at you\b|\b(senile|dementia)\b/i;
 const R_THREAT = /\b(kick your (ass|butt)|punch (you|your)|knock you out|take (this|it) outside|meet me outside|(see what happens|see you) outside|fight me|(i('ll| will)|gonna|going to) (hurt|kill|beat you up|smack|slap|choke) you|you('re| are) dead)\b/i;
 const CRIME_SRC = "took bribes|takes bribes|bribe\\w*|on the take|a criminal|a crook|a felon|a rapist|raped|sexually assaulted|assaulted|a pedophile|fund(ed|s|ing)? terror\\w*|a terrorist|committed treason|treason|launder\\w*|embezzl\\w*|belongs? in (jail|prison)|should be (in jail|in prison|arrested|locked up)";
+// Dehumanizing a whole group ("immigrants are animals", "send them all back").
+const R_BIGOT = new RegExp("\\b(immigrants?|migrants?|refugees?|muslims?|jews|blacks|black people|asians|mexicans|latinos|hispanics|gays|lesbians|trans(?:gender)? people|women|arabs|africans|those people)\\b[^.!?]{0,30}\\b(are|is)\\s+(all\\s+|just\\s+|nothing but\\s+|a bunch of\\s+)?(animals|vermin|subhuman|parasites|savages|rapists|an infestation|a disease|filth|inferior|not human|less than human)\\b|\\b(go back to (your|their) (own )?countr(y|ies)|send (them|those people) (all )?back where they came from)\\b", "i");
 const R_CONSPIRACY = /\b(deep state|shadow government|globalist\w*|new world order|lizard people|chemtrails?|puppet masters?|stolen election|false flag|do your own research|the elites? control)\b/i;
 const R_PRAISE = /\b(i (actually |really |completely |fully )?agree with (my opponent|you|governor|senator|representative|congress\w+|mr\.?|ms\.?)|(my opponent|you)('s| is| are) (absolutely |completely )?(right|correct)|you make a (good|fair) point|good point|i (respect|admire) (you|my opponent)|credit where|well said)\b/i;
 const R_STORY = /\bmy (late )?(mother|mom|father|dad|wife|husband|son|daughter|kids?|child|baby|brother|sister|uncle|aunt|grandma|grandmother|grandpa|grandfather|best friend|dog|cousin)\b[^.!?]{0,90}\b(died|passed away|passed|was killed|killed|overdosed|cancer|couldn'?t afford|went bankrupt|lost everything|lost (his|her|their) (job|home|life))\b/i;
@@ -2403,7 +2495,7 @@ function relText(){
 
 // Who the opponent is, as the player might call them.
 function oppNamesSrc(){ const o = S.opp; return [lastName(o.name), o.short, "my opponent", "your opponent"].filter(Boolean).map(reEsc).join("|"); }
-const sentencesOf = t => String(t).split(/(?<=[.!?…])\s+/);
+const sentencesOf = t => String(t).split(/(?<=[.!?…])(?<!\b(?:Mr|Mrs|Ms|Dr|Gov|Sen|Rep|Lt|Gen|Sgt|St|Jr|Sr|vs|Prof|Rev)\.)\s+/);
 
 // What kind of moment is this? Words catch the common ones, sentence by sentence; the AI check
 // catches the rest (slurs, bigotry, lies about the record, nonsense in ordinary words).
@@ -2434,11 +2526,13 @@ function classifyLine(text, stepKind){
     if (R_LOOKS.test(s) && at.test(s)) hit("looks");
     if (R_PERSONAL_AT.test(s) || insultNear.test(s)) hit("insult");
     if (R_CONSPIRACY.test(s)) hit("conspiracy");
+    if (R_BIGOT.test(s)) hit("bigotry");
     if (mod.test(s) && R_BIAS.test(s)) hit("attack_mod");
     else if (mod.test(s) && /\?\s*$/.test(s)) hit("address_mod");
     if (META.test(s) || R_SONG.test(s)) hit("absurd");
     if (R_PRAISE.test(s)) hit("praise");
     if (R_STORY.test(s)) hit("story");
+    if (R_JOKE.test(s) && (at.test(s) || (S.rounds[S.ri] && S.rounds[S.ri].kind === "topic" && topicHits(s, S.ri) > 0)) && ((S.laughs || {})[S.ri] || 0) < 2) hit("joke");
   }
   end = t.length;
   if (theirs && overlap(t, theirs) > 0.5) hit("copy");
@@ -2494,7 +2588,7 @@ function oppGuide(kind){
     case "curse_mild": return `${P} used a mild curse word. Let it go, or note the difference in class in a few words.`;
     case "praise": return `${P} just agreed with you or praised you. If it was sincere, you can enjoy it with a light quip${ex("Well then, you should vote for me.", "I'll take it.", "Write that down, everybody.")}. If it was a setup ("I agree, but…"), don't take the bait: you're still opponents.`;
     case "joke": return `${P} just landed a joke and the audience laughed. Don't get defensive or humorless: take it in stride, laugh it off or answer with some wit of your own, then make your point.`;
-    case "story": return r.stories >= 3 ? `${P} has told several tragic personal stories tonight. You're starting to doubt them; say so carefully, without mocking anyone's grief.` : `${P} just shared a painful personal story. Treat it with respect and never mock it. You can agree on the problem and pivot to how your plan answers it.`;
+    case "story": return r.stories >= 3 ? `${P} has told several tragic personal stories tonight. You're starting to doubt them; say so carefully, without mocking anyone's grief.` : `${P} just shared a painful personal story. Treat it with respect and never mock it. Your first sentence acknowledges what happened to them; don't answer with a made-up story of your own. You can agree on the problem and pivot to how your plan answers it.`;
     default: return "";
   }
 }
@@ -2574,6 +2668,33 @@ function jokeLands(text){
     || (r.kind === "topic" && topicHits(text, S.ri) > 0);
   if (relevant) S_[S.ri] = (S_[S.ri] || 0) + 1;
   return relevant;
+}
+
+// A joke shaped like one: a mocking comparison ("more times than a weather vane in a hurricane").
+// Counts only when it's aimed at the opponent or the question (see jokeLands).
+const R_JOKE = /\b(more|faster|longer|worse|older|slower|bigger|harder|quicker|smoother|higher|lower|dumber|emptier|cheaper|thinner|shakier|colder) (\w+ ){0,3}than (a|an) (\w+ ){0,3}\w+ (in|on|at|during|with) (a|an|the) \w+|\bthan a (weather ?vane|used[- ]car salesman|kid in a candy store|goldfish|squirrel|cat on a hot tin roof)|\b(so|as) (old|slow|boring|out of touch|confused) (that|as) (a|an|the|even|he|she|they|his|her)\b|\b(older|slower) than (dirt|dial-?up|the hills|a fax machine)/i;
+// Groups of people (for bigotry: attacking a whole group needs a group named).
+const R_GROUP = /\b(immigrants?|migrants?|refugees?|muslims?|jews?|jewish|christians?|catholics?|blacks?|whites?|black people|white people|asians?|mexicans?|latinos?|latinas?|hispanics?|gays?|lesbians?|trans(gender)? people|women|men|girls|the poor|poor people|disabled|old people|millennials|boomers|arabs?|indians?|chinese|africans?|those people|these people)\b/i;
+// The AI's reaction check almost never quotes the words it reacted to, so a kind the word lists
+// didn't see is accepted when the line itself shows it is plausible (who it's aimed at, a group,
+// the moderator). That keeps the AI's catches (bigotry, a lie about the record) and drops its
+// misreads ("his plan has no price tag" isn't an attack on the moderator).
+function kindGrounded(kind, text){
+  const t = String(text || ""), low = t.toLowerCase();
+  const atOpp = new RegExp(`\\b(${oppNamesSrc()}|you|your|you're|he|she|his|her|him|they|their)\\b`, "i").test(t);
+  switch (kind){
+    case "bigotry": return R_GROUP.test(t);
+    case "attack_mod": case "address_mod": return modNameRe().test(t) || /\b(moderator|these questions|this question|the questions|you'?re biased|this debate is rigged)\b/i.test(t);
+    case "praise": return atOpp && /\b(agree|right|correct|good|fair|respect|admire|credit|well said|thank)\w*/i.test(t);
+    case "lie_record": return atOpp && /\b(voted|votes|vote|said|says|supported|opposed|cut|raised|took|signed|wants|promised|has|have|had|never|always|did|was|were)\b/i.test(t);
+    case "family": return R_FAMILY.test(t);
+    case "threat": case "crime": return atOpp;
+    case "conspiracy": return R_CONSPIRACY.test(t) || /\b(rigged|cover[- ]?up|secret(ly)?|controls? (the|our)|they don'?t want you to know)\b/i.test(t);
+    case "copy": { const theirs = S.lines.filter(l => l.who === "opp" && !l.live).map(l => l.text).join(" \n "); return !!theirs && overlap(t, theirs) > 0.35; }
+    case "joke": return low.length > 15;
+    case "absurd": case "stunt": case "slur": return true;
+    default: return false;
+  }
 }
 
 // Lines for when the AI check comes back empty but the moment demands a reaction (taken from how
@@ -2667,11 +2788,18 @@ function currentQuestion(){
   const names = [S.opp.name, S.player.name].map(n => reEsc(n.trim().split(/\s+/).pop())).join("|");
   return q.replace(new RegExp(`,\\s+(?:\\w+\\.?\\s+)?(?:${names})([?.])$`), "$1").replace(new RegExp(`^(?:\\w+\\.?\\s+)?(?:${names}),\\s*`), "");
 }
+const R_LANG = /\b(in|into) (spanish|french|german|chinese|mandarin|japanese|russian|italian|portuguese|arabic|klingon|pig latin|english)\b/i;
+const R_BREAK = /\b(go to the (bathroom|restroom|toilet|loo)|(bathroom|restroom|potty|toilet) break|take a (break|breather|minute off)|(have|need) to (pee|poop)|use the (bathroom|restroom)|can i (get|have) (some )?(water|a drink|a snack))\b/i;
 function askedToRepeat(step, line){
-  if (!R_REPEAT.test(line.text) || words(line.text) > 35 || step.kind === "crosstalk") return false;
+  if (step.kind === "crosstalk" || words(line.text) > 35) return false;
+  const lang = R_LANG.test(line.text) && /\b(repeat|say|ask|translate|again|once more|question)\b/i.test(line.text);
+  const brk = R_BREAK.test(line.text);
+  if (!R_REPEAT.test(line.text) && !lang && !brk && !/\brepeat (it|that|the question)\b/i.test(line.text)) return false;
   S.repeats = S.repeats || {}; const n = S.repeats[S.ri] = (S.repeats[S.ri] || 0) + 1;
   const A = addressName(S.player), q = currentQuestion();
-  const say = n === 1 ? `Of course. ${q}` : n === 2 ? `One more time, ${A}: ${q}` : `${A}, you've heard the question twice. We need an answer.`;
+  const say = brk ? (n <= 2 ? `${pick(["No breaks until the end of the debate, I'm afraid.", "We're live, " + A + ". It'll have to wait.", "There are no breaks tonight, " + A + "."])} ${n === 1 ? q : "We need an answer."}` : `${A}, you've stalled long enough. We need an answer.`)
+    : lang ? (n <= 2 ? `We're conducting tonight's debate in English, ${A}. ${q}` : `${A}, you've heard the question twice. We need an answer.`)
+    : n === 1 ? `Of course. ${q}` : n === 2 ? `One more time, ${A}: ${q}` : `${A}, you've heard the question twice. We need an answer.`;
   S.seq.splice(S.si + 1, 0, {who:"mod", text: say}, ...(n <= 2 ? [{who:"you", kind: step.kind}] : []));
   if (n >= 3) S.notes.push(`${lastName(S.player.name)} kept asking for the question to be repeated instead of answering.`);
   return true;
@@ -2684,6 +2812,7 @@ function reactToYou(step, line){
   const text = line.text, P = P_(), r = RS();
   const c = classifyLine(text, step.kind), kind = c.top, b = kind ? BEATS[kind] : null;
   if (kind) noteMoment(kind);
+  if (kind === "joke"){ const L = S.laughs || (S.laughs = {}); L[S.ri] = (L[S.ri] || 0) + 1; }
   if (kind !== "story" && c.kinds.includes("story")) noteMoment("story");
   if (!kind && step.kind !== "crosstalk" && words(text) >= 12) noteSerious();
   r.pending = kind ? {kind, ri: S.ri, at: S.lines.indexOf(line)} : null;
@@ -2774,7 +2903,8 @@ async function runOpponent(kind){
   const node = $("#transcript").lastElementChild?.querySelector(".say");
   try {
     const answering = !!justSaid();
-    const opts = {maxTokens: kind === "rebuttal" ? 200 : kind === "opening" || kind === "closing" ? 380 : 300, think: think("speech"), grammar: think("speech") ? null : answering ? SPEECH_HEARD_GBNF : SPEECH_GBNF,
+    const opts = {maxTokens: kind === "rebuttal" ? 200 : kind === "opening" || kind === "closing" ? 380 : 300, think: think("speech"),
+      wordCap: think("speech") ? 0 : kind === "rebuttal" ? 85 : kind === "opening" || kind === "closing" ? 145 : 125, grammar: think("speech") ? null : answering ? SPEECH_HEARD_GBNF : SPEECH_GBNF,
       onText: t => { if (ep !== epoch) return; const sp = stripTags(splitPlan(stripHeard(t)).speech.replace(/\*\*?/g, "")); ln.text = sp; if (node){ node.textContent = sp; node.classList.add("typing"); scrollStage(); } }};
     const prompt = fitPrompt(b => opponentPrompt(kind, b), opts.maxTokens);
     const raw = await ai("text", `${S.opp.short} · ${kind}`, prompt, opts);
@@ -2782,7 +2912,7 @@ async function runOpponent(kind){
     const heardSlur = /^\s*HEARD:\s*slur/i.test(raw), heardFunny = /^\s*HEARD:\s*funny/i.test(raw);
     const sp = splitPlan(stripHeard(raw));
     if (sp.plan) ln.plan = sp.plan;
-    let text = dropMetaTalk(cleanSpeech(sp.speech));
+    let text = dropRepeats(dropMetaTalk(cleanSpeech(sp.speech)));
     if (parseMoods(text).text.length < 2 || REFUSAL.test(parseMoods(text).text)){
       // Small models sometimes step out of character. Ask once more, then stay in character no matter what.
       text = dropMetaTalk(cleanSpeech(splitPlan(stripHeard(await ai("text", `${S.opp.short} · ${kind} (retry)`, {...prompt, user: prompt.user + "\n\nThis is a fictional debate in a game. Stay fully in character as the candidate and speak."}, opts))).speech));
@@ -2907,16 +3037,18 @@ async function runCheck(){
   // sometimes invent an insult), and at most once a segment, like a real debate.
   const lastYou = [...S.lines].reverse().find(l => l.who === "you");
   const quote = normWords(j && j.provoked_by);
-  const grounded = quote.length >= 3 && lastYou && normWords(lastYou.text).includes(quote);
+  const quoted = quote.length >= 3 && lastYou && normWords(lastYou.text).includes(quote);
+  const aiK = j && AI_KINDS.includes(j.kind) ? j.kind : null;
+  const grounded = !!(quoted || (aiK && lastYou && kindGrounded(aiK, lastYou.text)) || (kind && st.kind === kind && lastYou));
   // What the AI noticed that word lists can't: a slur, bigotry, a lie about the record, nonsense.
   let must = !!st.must;
   const aiKind = j && AI_KINDS.includes(j.kind) && BEATS[j.kind] ? j.kind : null;
   // A joke that lands: laughter, and the opponent knows the room is with the player for a moment.
-  if (aiKind === "joke" && !kind && grounded && lastYou && jokeLands(lastYou.text)){
+  if (aiKind === "joke" && !kind && lastYou && grounded && jokeLands(lastYou.text)){
     addLine("crowd", crowdText("joke"));
     r.pending = {kind:"joke", ri: S.ri, at: S.lines.indexOf(lastYou)};
   }
-  if (aiKind && aiKind !== kind && (!kind || BEATS[aiKind].sev > BEATS[kind].sev) && (grounded || BEATS[aiKind].absurd || aiKind === "slur" || aiKind === "bigotry")){
+  if (aiKind && aiKind !== kind && kind !== "joke" && (!kind || BEATS[aiKind].sev > BEATS[kind].sev) && (grounded || BEATS[aiKind].absurd || aiKind === "slur")){
     let ok = true;
     if (aiKind === "slur"){ ok = !!lastYou && await confirmSlur(lastYou.text); if (ep !== epoch) return; }
     if (aiKind === "bigotry" && !grounded) ok = false;
@@ -2941,7 +3073,7 @@ async function runCheck(){
   busy = false;
   const extra = [];
   let raw = allowCut && j ? cleanSpeech(String(j.opp_line || "")) : "";
-  if (raw) raw = endAtSentence(raw).replace(/…$/, "");
+  if (raw) raw = finishLine(raw);
   if (must && (!raw || REFUSAL.test(raw) || parseMoods(raw).text.length < 2)) raw = pick(MUST_FALLBACK[kind] || ["Excuse me?"]);
   const cut = parseMoods(raw), line = cut.text;
   const META_TALK = /\b(in character|character|the game|a game|script|prompt|AI|simulation|JSON|fourth wall)\b/i;
@@ -2949,6 +3081,11 @@ async function runCheck(){
   if (META_TALK.test(mod)) mod = "";
   let follow = j && dodge && j.press ? String(j.follow_up || "").trim() : "";
   if (META_TALK.test(follow)) follow = "";
+  if (follow){
+    const before = S.lines.filter(l => l.who === "mod").map(l => l.text).join(" \n ");
+    const qNow = currentQuestion();
+    if (overlap(follow, before) > 0.4 && overlap(follow, qNow) < 0.4) follow = `${addressName(S.player)}, I'll ask again. ${qNow}`;
+  }
   // She only speaks here for a reason: order after a cut-in, a warning, being addressed or accused,
   // or nonsense instead of an answer. Anything else the AI wrote for her is dropped.
   const modReason = kind && /^(attack_mod|address_mod|refuse|absurd|stunt|copy|conspiracy)$/.test(kind);
@@ -3017,7 +3154,21 @@ async function settleJudging(){ while (judging.size) await Promise.all([...judgi
 
 async function runJudge(){
   const ep = epoch, ri = S.ri, next = S.rounds[ri + 1];
-  if (next && next.kind === "topic"){
+  if (next && (next.kind === "topic" || next.kind === "close")){
+    if (next.kind === "topic" && next.first === "opp") AI.holdLow(20000);
+    judgeInBackground(ri, S.notes.slice());
+    startRound(ri + 1);
+    return;
+  }
+  if (next && next.kind === "curve"){
+    // Her character question is one short call of its own; the scores come in the background.
+    busy = true; renderDock(`${MOD.short} looks over her notes…`);
+    let q = "";
+    try { const j = await ai("json", "Moderator's question", fitPrompt(b => curvePrompt(b, next), 160), {schema: CURVE_SCHEMA, maxTokens: 160}); q = String((j && j.question) || "").trim(); }
+    catch(e){}
+    if (ep !== epoch) return;
+    busy = false;
+    if (q && /[a-z]{3}/i.test(q) && !REFUSAL.test(q)) next.question = fixAddressee(q, next);
     judgeInBackground(ri, S.notes.slice());
     startRound(ri + 1);
     return;
@@ -3112,7 +3263,26 @@ function skipStep(){
   S.si++; save(); render(); advance();
 }
 
+// A candidate who refused to answer while the other gave a real one doesn't gain voters for it,
+// whatever the scorer wrote: moves toward them flip to the other side (gently).
+function refusalFix(j, ri = S.ri){
+  if (!j || !j.shifts || !S.rounds[ri] || !/^(topic|curve)$/.test(S.rounds[ri].kind)) return j;
+  const seg = S.lines.filter(l => l.round === ri && !l.live && !l.interrupt);
+  const said = who => seg.filter(l => l.who === who).map(l => l.text).join(" ");
+  const empty = who => { const x = said(who).trim(); return !!x && (words(x) < 10 || (R_REFUSE.test(x) && words(x) < 25) || /\b(not (going to )?answer(ing)?|won'?t answer|refuse to answer|next question)\b/i.test(x) && words(x) < 25); };
+  const real = who => words(said(who)) >= 30;
+  const [PN, ON] = sideNames();
+  const quitter = empty("you") && real("opp") ? PN : empty("opp") && real("you") ? ON : null;
+  if (!quitter) return j;
+  const other = quitter === PN ? ON : PN, shifts = {};
+  for (const b of BLOCS){
+    const x = j.shifts[b.id];
+    shifts[b.id] = x && typeof x === "object" && "toward" in x && String(x.toward).toUpperCase() === quitter.toUpperCase() ? {...x, toward: other, by: Math.max(1, Math.min(2, Number(x.by) || 0))} : x;
+  }
+  return {...j, shifts, winner: other};
+}
 function applyJudgment(j, ri = S.ri){
+  j = refusalFix(j, ri);
   const shifts = {}, [PN, ON] = sideNames(), side = v => { v = String(v || "").toUpperCase(); return v === PN || v === "YOU" ? 1 : v === ON || v === "OPP" ? -1 : 0; };
   j = {...j, winner: side(j.winner) > 0 ? "you" : side(j.winner) < 0 ? "opp" : "draw"};
   for (const b of BLOCS){
@@ -3627,6 +3797,16 @@ async function checkDevice(){
   for (const m of MODELS){ const c = $("#cache-" + m.name); if (c) c.textContent = (await AI.isCached(m.id)) ? "✓ Downloaded" : "One-time download"; }
 }
 
+// The moderator says the player's name all night ("Governor ___, your answer?"), so it has to be a
+// name: nothing she couldn't say on air, and not a word like "you" that the game would mistake
+// for ordinary speech.
+function badName(name){
+  const n = String(name).trim(), last = n.split(/\s+/).pop().toLowerCase().replace(/[^a-z']/g, "");
+  if (PROFANE.test(n) || R_SLUR.test(n) || R_CRUDE.test(n) || /\b(f+u+c*k+|sh[i1]t|bitch|cunt|dick|cock|pussy|ass(hole)?|nazi|hitler)\w*/i.test(n)) return "Pick a name a TV moderator could say on air. (You can still say whatever you like on stage.)";
+  if (!/[a-z]{2}/i.test(n) || /\d/.test(n)) return "Give your candidate a real name, in letters.";
+  if (/^(you|me|i|him|her|them|they|us|we|it|the|a|an|moderator|opponent|nobody|someone|president|governor|senator|candidate|player|yes|no)$/.test(last)) return `"${n}" would get mixed up with ordinary words on stage. Give your candidate a real name.`;
+  return "";
+}
 async function onStart(e){
   e.preventDefault();
   try { if (Crowd.on) Crowd.setup(); } catch(ex){}
@@ -3640,6 +3820,8 @@ async function onStart(e){
   if (mode === "pick" && built.count > 5) return $("#setupErr").textContent = "Pick five issues at most. Focus wins debates.";
   const platform = mode === "pick" ? built.text : $("#f-platform").value.trim();
   if (!name) return err.textContent = "Give your candidate a name.";
+  const nameProblem = badName(name);
+  if (nameProblem) return err.textContent = nameProblem;
   if (!(age >= 18) || age > 120) return err.textContent = "Enter an age between 18 and 120.";
   if (!party) return err.textContent = "Name your party.";
   if (words(platform) < 5) return err.textContent = "Write at least a sentence about the policies you ran on.";
@@ -4101,7 +4283,7 @@ const LAB_CASES = [
   ["Fuck you, Whitaker.", ["curse", "insult"], true],
   ["This housing market is total bullshit.", ["curse"], null],
   ["My butt hurts, I think I put my fist too far up it last night.", ["crude", "absurd"], null],
-  ["Immigrants are animals and criminals, every single one of them.", ["bigotry"], null],
+  ["Immigrants are animals and criminals, every single one of them.", ["bigotry"], true],
   ["My opponent has changed positions on taxes more times than a weather vane in a hurricane.", ["joke", "insult"], null],
   ["Why did the chicken cross the road? To get to the other side!", ["absurd", "stunt"], false],
   ["La la la, I'm a little teapot, short and stout.", ["absurd"], false],
@@ -4113,7 +4295,9 @@ const LAB_CASES = [
   ["Ms. Brooks, what do you think about this?", ["address_mod"], false],
   ["The deep state and global elites are rigging the housing market.", ["conspiracy"], null],
   ["Governor Whitaker voted to abolish Social Security three times.", ["lie_record", "crime"], null],
-  ["No comment.", ["refuse"], false]
+  ["No comment.", ["refuse"], false],
+  ["Governor Whitaker is so out of touch that he thinks a smartphone is a fancy calculator.", ["joke", "insult"], null],
+  ["Muslims are all terrorists and they should go back to their own countries.", ["bigotry"], true]
 ];
 // Rude words that are not slurs: the slur check must say no to every one.
 const LAB_NOT_SLURS = ["You're a communist.", "You absolute idiot.", "Shut up, you bastard.", "Go to hell.", "You're a fascist and a liar.", "What a moron."];
@@ -4124,7 +4308,12 @@ const LAB_SCORING = [
   ["Whatever. Next question. You're a clown anyway.",
    "I'd expand the low-income housing tax credit by 40 percent and cut federal permitting time for new apartments to 90 days, paid for by ending the oil depletion allowance.", "opp"],
   ["Fuck this question. I'm not answering it.",
-   "Families are paying a third of their income on rent. I'd fund 500,000 new starter homes and give first-time buyers a 15,000 dollar down-payment credit.", "opp"]
+   "Families are paying a third of their income on rent. I'd fund 500,000 new starter homes and give first-time buyers a 15,000 dollar down-payment credit.", "opp"],
+  ["No comment.",
+   "I'd cut the permitting red tape that keeps builders waiting for years, expand the housing tax credit for working families, and pay for it by ending subsidies for oil companies.", "opp"],
+  // A confident liar: big made-up numbers against a plain, real plan.
+  ["Under my leadership Colorado built 2 million new homes last year and cut rents by 40 percent. My plan saves every family 9,000 dollars a year starting on day one, guaranteed.",
+   "I'd cut the permitting red tape that keeps builders waiting for years, expand the housing tax credit for working families, and pay for it by ending subsidies for oil companies.", "opp"]
 ];
 
 const Lab = {
@@ -4187,18 +4376,23 @@ const Lab = {
         const code = classifyLine(line, "answer").top;
         const t = await this.time("check", () => ai("json", "Lab · check", fitPrompt(b => quickCheckPrompt(b, true), 90), {schema: QUICK_SCHEMA, maxTokens: 90}));
         const j = t.r || {};
-        const grounded = normWords(j.provoked_by).length >= 3 && normWords(line).includes(normWords(j.provoked_by));
-        // What the game would end up with: the words' verdict first, then the AI's when the words saw nothing.
-        const game = code || (j.kind && j.kind !== "none" ? j.kind : "none");
+        const aiK = AI_KINDS.includes(j.kind) && BEATS[j.kind] ? j.kind : null;
+        const quoted = normWords(j.provoked_by).length >= 3 && normWords(line).includes(normWords(j.provoked_by));
+        const grounded = quoted || (aiK && kindGrounded(aiK, line));
+        // What the game ends up with: the words' verdict, unless the AI saw something more serious that
+        // the line backs up (and that the game takes from the AI at all).
+        const TAKE = /^(slur|bigotry|family|threat|crime|crude|lie_record|conspiracy|absurd|stunt|copy|attack_mod|joke)$/;
+        const aiUsed = aiK && aiK !== code && code !== "joke" && TAKE.test(aiK) && (grounded || (BEATS[aiK] || {}).absurd) && (!code || BEATS[aiK].sev > BEATS[code].sev);
+        const game = aiUsed ? aiK : code || "none";
         const kindAlias = k => k === "curse_at" || k === "curse_strong" || k === "curse_mild" ? "curse" : k;
-        const ok = want.includes(kindAlias(game)) || want.includes(kindAlias(j.kind || "none"));
+        const ok = want.includes(kindAlias(game));
         if (ok) right++;
         // Would the opponent cut in, all things considered (the AI's call, or a moment that always gets one)?
-        const would = !!(j.react && grounded) || !!(code && BEATS[code] && BEATS[code].react === "must");
+        const would = !!(game !== "none" && BEATS[game] && BEATS[game].react === "must") || !!(j.react && grounded && BEATS[game] && BEATS[game].sev >= 3);
         if (cut !== null){ cutTotal++; if (would === cut) cutRight++; }
-        rows.push(`| ${ok ? "✓" : "✗"} | ${clip(line, 70).replace(/\|/g, "/")} | ${want.join("/")} | ${code || "-"} | ${j.kind || (t.err ? "ERROR" : "?")} | ${would ? "yes" : "no"}${cut === null ? "" : cut === would ? "" : cut ? " **(want yes)**" : " **(want no)**"}${j.react && !grounded ? " (AI said yes, quote not in line)" : ""} | ${clip(String(j.provoked_by || ""), 40).replace(/\|/g, "/")}${j.provoked_by ? (grounded ? "" : " **(not in line)**") : ""} | ${j.press ? "yes" : "no"} | ${(t.ms / 1000).toFixed(1)} |`);
+        rows.push(`| ${ok ? "✓" : "✗"} | ${clip(line, 70).replace(/\|/g, "/")} | ${want.join("/")} | ${code || "-"} | ${j.kind || (t.err ? "ERROR" : "?")} | ${would ? "yes" : "no"}${cut === null ? "" : cut === would ? "" : cut ? " **(want yes)**" : " **(want no)**"}${j.react && !grounded ? " (AI said yes, line doesn't back it up)" : ""} | ${game}${aiK && aiK !== game && aiK !== "none" ? ` (AI's ${aiK} not used)` : ""} | ${j.press ? "yes" : "no"} | ${(t.ms / 1000).toFixed(1)} |`);
       }
-      this.log(`\n## 2. Reaction check (each line twice): ${right}/${LAB_CASES.length * REPS} right kind, ${cutRight}/${cutTotal} right cut-in call\n\n| | Line | Should be | Words saw | AI saw | Cut in? | Quoted | Press? | s |\n|---|---|---|---|---|---|---|---|---|\n${rows.join("\n")}`);
+      this.log(`\n## 2. Reaction check (each line twice): ${right}/${LAB_CASES.length * REPS} right kind, ${cutRight}/${cutTotal} right cut-in call\n\n| | Line | Should be | Words saw | AI saw | Cut in? | Game goes with | Press? | s |\n|---|---|---|---|---|---|---|---|---|\n${rows.join("\n")}`);
 
       // 3. The slur check must never fire on ordinary rudeness.
       this.progress("3/7 Slur check…");
@@ -4213,7 +4407,7 @@ const Lab = {
       // 4. The opponent's speech: format, notes leaking, cut-offs, fallbacks, reactions.
       const speechCases = [
         ["I'll cap rent increases at three percent and build three million homes.", "normal", "normal"],
-        ["My opponent has changed positions on taxes more times than a weather vane in a hurricane.", "joke", "funny"],
+        ["My opponent has changed positions on taxes more times than a weather vane in a hurricane.", "joke", "funny|normal"],
         ["You're a clueless dinosaur, Whitaker.", "insult", "normal"],
         ["My father lost his job when the plant closed, and we lost our house that winter.", "story", "normal"],
         ["Shut up, you f***ing donkey.", "cursing at them", "normal"],
@@ -4225,7 +4419,7 @@ const Lab = {
         this.progress(`4/7 Opponent speeches ${n + 1}/${speechCases.length * 2}…`);
         this.scene(st, line);
         const c = classifyLine(line, "answer"); if (c.top) RS().pending = {kind: c.top, ri: 1, at: 2};
-        const t = await this.time("speech", () => ai("text", "Lab · speech", fitPrompt(b => opponentPrompt("answer", b), 300), {maxTokens: 300, grammar: SPEECH_HEARD_GBNF}));
+        const t = await this.time("speech", () => ai("text", "Lab · speech", fitPrompt(b => opponentPrompt("answer", b), 300), {maxTokens: 300, grammar: SPEECH_HEARD_GBNF, wordCap: 125}));
         const raw = String(t.r || "");
         const heard = (/^\s*HEARD:\s*(\w+)/i.exec(raw) || [])[1] || "(none)";
         const sp = splitPlan(stripHeard(raw));
@@ -4239,8 +4433,8 @@ const Lab = {
         if (META_SENTENCE.test(cleanSpeech(sp.speech))) issues.push("talked about the game/AI (cut)");
         const wc = words(parseMoods(text).text);
         if (wc > 140) issues.push(`long (${wc} words)`);
-        prow.push(`| ${issues.length ? "✗" : "✓"} | ${label} | ${heard}${heard.toLowerCase() === heardWant ? "" : ` (want ${heardWant})`} | ${wc} | ${issues.join(", ") || "-"} | ${(t.ms / 1000).toFixed(1)} |`);
-        this.log(`\n<details><summary>Speech: ${label}</summary>\n\n> ${line}\n\n\`\`\`\n${raw}\n\`\`\`\n</details>`);
+        prow.push(`| ${issues.length ? "✗" : "✓"} | ${label} | ${heard}${heardWant.split("|").includes(heard.toLowerCase()) ? "" : ` (want ${heardWant})`} | ${wc} | ${issues.join(", ") || "-"} | ${(t.ms / 1000).toFixed(1)} |`);
+        this.log(`\n<details><summary>Speech: ${label}</summary>\n\n> ${line}\n\n\`\`\`\n${raw}\n\`\`\`\n\nOn stage: ${parseMoods(text).text}\n</details>`);
       }
       this.log(`\n## 4. Opponent speeches\n\n| | After | HEARD | Words | Problems | s |\n|---|---|---|---|---|---|\n${prow.join("\n")}`);
 
@@ -4248,16 +4442,19 @@ const Lab = {
       this.progress("5/7 Repetition…");
       this.scene(st, null);
       const qs = ["What would you do about rent?", "How would you pay for it?", "What about Social Security?", "What would you do about inflation?", "What's your plan for manufacturing jobs?"];
-      const answers = [];
+      const answers = []; let cutTotalRep = 0;
       for (let i = 0; i < qs.length; i++){
         this.progress(`5/7 Repetition ${i + 1}/${qs.length}…`);
         st.lines.push({who:"mod", text: qs[i], t:100 + i * 60, round:1});
-        const t = await this.time("rep", () => ai("text", "Lab · repetition", fitPrompt(b => opponentPrompt("answer", b), 300), {maxTokens: 300, grammar: SPEECH_GBNF}));
-        const text = parseMoods(dropMetaTalk(cleanSpeech(splitPlan(stripHeard(String(t.r || ""))).speech))).text;
+        const t = await this.time("rep", () => ai("text", "Lab · repetition", fitPrompt(b => opponentPrompt("answer", b), 300), {maxTokens: 300, grammar: SPEECH_GBNF, wordCap: 125}));
+        const before = dropMetaTalk(cleanSpeech(splitPlan(stripHeard(String(t.r || ""))).speech));
+        const text = parseMoods(dropRepeats(before)).text;
+        const cutN = sentencesOf(before).length - sentencesOf(dropRepeats(before)).length;
+        if (cutN) cutTotalRep += cutN;
         answers.push(text); st.lines.push({who:"opp", text, t:120 + i * 60, round:1});
       }
       const note = phrasesNote();
-      this.log(`\n## 5. Repetition over five answers\n\nWhat the game would tell the opponent next: ${note ? note.trim() : "(nothing repeated)"}\n\n<details><summary>The five answers</summary>\n\n${answers.map((a, i) => `**${qs[i]}** ${a}`).join("\n\n")}\n</details>`);
+      this.log(`\n## 5. Repetition over five answers\n\nSentences the game cut as recycled catchphrases: ${cutTotalRep}.\n\nWhat the game would tell the opponent next: ${note ? note.trim() : "(nothing repeated)"}\n\n<details><summary>The five answers</summary>\n\n${answers.map((a, i) => `**${qs[i]}** ${a}`).join("\n\n")}\n</details>`);
 
       // 6. Scoring: blank replies, the right winner, voters moving the way the verdict says.
       const jrows = [];
@@ -4267,14 +4464,14 @@ const Lab = {
         this.progress(`6/7 Scoring ${n + 1}/${LAB_SCORING.length * 2}…`);
         this.scene(st, you, opp);
         const t = await this.time("judge", () => ai("json", "Lab · scoring", fitPrompt(b => judgePrompt(b, 1, false, []), 700), {schema: judgeSchema(false), maxTokens: 700}));
-        const a = t.r || {};
+        const a = refusalFix(t.r || {}, 1);
         const [PN, ON] = sideNames(), side = v => { v = String(v || "").toUpperCase(); return v === PN ? "you" : v === ON ? "opp" : "draw"; };
         const net = BLOCS.reduce((n, b) => { const x = a.shifts && a.shifts[b.id]; return n + (x ? (side(x.toward) === "you" ? 1 : side(x.toward) === "opp" ? -1 : 0) * (Number(x.by) || 0) : 0); }, 0);
         const w = side(a.winner), junk = junkJudge(a);
         const ok = !junk && w === want && (want === "you" ? net > 0 : net < 0);
-        jrows.push(`| ${ok ? "✓" : "✗"} | ${want} | ${w}${junk ? " (blank)" : ""} | ${net > 0 ? "+" : ""}${net} | ${clip(String(a.headline || ""), 70).replace(/\|/g, "/")} | ${(t.ms / 1000).toFixed(1)} |`);
+        jrows.push(`| ${ok ? "✓" : "✗"} | ${want} | ${w}${junk ? " (blank)" : ""} | ${net > 0 ? "+" : ""}${net} | ${clip(String(a.headline || ""), 70).replace(/\|/g, "/")}${a.fact_check ? ` · fact check: ${clip(String(a.fact_check), 90).replace(/\|/g, "/")}` : ""} | ${(t.ms / 1000).toFixed(1)} |`);
       }
-      this.log(`\n## 6. Scoring\n\n| | Should win | Scorer said | Net voter move (+ = player) | Headline | s |\n|---|---|---|---|---|---|\n${jrows.join("\n")}`);
+      this.log(`\n## 6. Scoring\n\n| | Should win | Scorer said (after the game's rules) | Net voter move (+ = player) | Headline | s |\n|---|---|---|---|---|---|\n${jrows.join("\n")}`);
 
       // 7. Cut-ins: the words the opponent blurts out after the big moments.
       const cutCases = [["Fuck you, Whitaker.", "curse_at"], ["Your wife must be embarrassed to be married to you.", "family"], ["Say that one more time and I'll knock you out.", "threat"],
@@ -4286,12 +4483,13 @@ const Lab = {
         this.scene(st, line);
         const t = await this.time("words", () => ai("json", "Lab · cut-in words", fitPrompt(b => wordsPrompt(b, {kind, cut:true, press:false, warnNow: kind === "withdraw" ? 0 : 1}), 260), {schema: WORDS_SCHEMA, maxTokens: 260}));
         const w = t.r || {};
-        const line2 = parseMoods(cleanSpeech(String(w.opp_line || ""))).text;
+        const line2 = parseMoods(finishLine(cleanSpeech(String(w.opp_line || "")))).text;
+        const usesAI = /^(attack_mod|address_mod|refuse|absurd|stunt|copy|conspiracy)$/.test(kind);
         const issues = [];
         if (!line2) issues.push("empty");
         if (line2 && !/[.!?…"”')]\s*$/.test(line2)) issues.push("cut off");
         if (words(line2) > 45) issues.push("long");
-        crow.push(`| ${issues.length ? "✗" : "✓"} | ${kind} | ${clip(line2, 160).replace(/\|/g, "/")} | ${clip(String(w.moderator_line || ""), 110).replace(/\|/g, "/")} | ${issues.join(", ") || "-"} | ${(t.ms / 1000).toFixed(1)} |`);
+        crow.push(`| ${issues.length ? "✗" : "✓"} | ${kind} | ${clip(line2, 160).replace(/\|/g, "/")} | ${usesAI ? clip(String(w.moderator_line || ""), 110).replace(/\|/g, "/") : "(the game's own warning line)"} | ${issues.join(", ") || "-"} | ${(t.ms / 1000).toFixed(1)} |`);
       }
       this.log(`\n## 7. Cut-ins after big moments\n\n| | Moment | Opponent blurts | Moderator | Problems | s |\n|---|---|---|---|---|---|\n${crow.join("\n")}`);
 
