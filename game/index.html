@@ -170,7 +170,24 @@ textarea{resize:vertical;line-height:1.5}
 .pname{font-family:var(--display);font-weight:700;letter-spacing:.06em;text-transform:uppercase}
 .podium.you .pname{color:var(--you)} .podium.opp .pname{color:var(--opp)} .podium.mod .pname{font-size:13px;color:var(--muted)}
 .flank{font-size:12.5px;color:var(--muted)}
-.center{grid-area:center;align-self:end;display:flex;flex-direction:column;align-items:center;min-width:0}
+.center{grid-area:center;align-self:stretch;display:flex;flex-direction:column;align-items:center;min-width:0}
+.board{width:100%;flex:1;display:flex;flex-direction:column;justify-content:flex-start;gap:10px;margin-bottom:12px;min-height:0}
+.qcard{background:var(--surface);border:1px solid var(--line);border-left:4px solid var(--mod);border-radius:6px;padding:10px 14px}
+.qcard p{margin:4px 0 0;font-size:16px;line-height:1.45}
+.swing{background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:10px 14px;display:flex;flex-direction:column;gap:6px}
+.swing.fresh{animation:swingIn .6s ease-out}
+@keyframes swingIn{from{transform:translateY(-8px);opacity:0}to{transform:none;opacity:1}}
+.swing .hl{font-weight:700;font-size:15px}
+.swing .moves{display:flex;flex-wrap:wrap;gap:6px}
+.swing .mv{font-size:13px;padding:3px 8px;border-radius:12px;border:1px solid var(--line);background:var(--bg)}
+.swing .mv b{font-variant-numeric:tabular-nums}
+.swing .mv.up b{color:var(--you)} .swing .mv.down b{color:var(--opp)}
+.help{background:var(--surface);border:1px dashed var(--line);border-radius:6px;padding:8px 14px;font-size:13.5px;line-height:1.5}
+.help .btn{margin-left:4px;vertical-align:baseline}
+@media (max-width:760px){ .swing .mv span, .swing .mv{font-size:12px} .qcard p{font-size:15px} }
+.help ul{margin:6px 0 8px;padding-left:18px}
+.pmeta{display:block;font-size:11.5px;color:var(--muted);margin-top:2px;letter-spacing:.02em}
+.otwhy{display:block;font-size:12px;color:var(--muted);font-weight:400;margin-top:2px}
 .topic{display:flex;flex-direction:column;align-items:center;gap:6px;margin-bottom:-1px}
 .topictab{display:flex;gap:10px;align-items:baseline;background:var(--surface);border:1px solid var(--line);border-bottom:0;border-radius:6px 6px 0 0;padding:6px 16px}
 .topictab b{font-family:var(--display);font-size:20px;text-transform:uppercase;letter-spacing:.06em}
@@ -369,6 +386,8 @@ details summary{cursor:pointer;font-weight:600}
 
       <div class="panel">
         <h3>Your opponent</h3>
+        <div class="field"><label for="f-length">Debate length</label>
+          <select id="f-length"><option value="full" selected>Full debate: opening, 4 topics, a character question, closing (about 30 minutes)</option><option value="quick">Quick debate: opening, 3 topics, closing, no rebuttals (about 15 minutes)</option></select></div>
         <div class="opts" id="oppOpts"></div>
 
         <h3 style="margin-top:8px">Built-in AI</h3>
@@ -420,6 +439,11 @@ details summary{cursor:pointer;font-weight:600}
 
       <div class="podium you"><div class="face" id="face-you">😐</div><div class="lectern"><span class="pname" id="podYou">You</span></div><div class="flank" id="flankYou"></div></div>
       <div class="center">
+        <div class="board" id="board">
+          <div class="qcard" id="qcard" hidden><span class="label" id="qLabel">The question</span><p id="qText"></p></div>
+          <div class="swing" id="swing" hidden></div>
+          <div class="help" id="helpCard" hidden></div>
+        </div>
         <div class="topic">
           <div class="roundbar" id="roundBar"></div>
           <div class="topictab"><b id="roundTitle">Opening statements</b><span class="label" id="roundSub"></span></div>
@@ -449,7 +473,7 @@ details summary{cursor:pointer;font-weight:600}
           <div class="legend"><span id="legOpp">← Opponent</span><span>polling margin</span><span id="legYou">You →</span></div></div>
       <div class="box" id="p-voters" hidden><h3>Undecided voter blocs</h3>
         <div id="blocMeters" style="display:flex;flex-direction:column;gap:8px"></div>
-        <small class="muted">Lean among each bloc's persuadable voters. Small arrows show the last segment's shift.</small></div>
+        <small class="muted">How each group's persuadable voters lean: positive numbers toward you, negative toward your opponent. The small ▲▼ shows how much the last segment moved them. Groups that already lean hard one way are harder to move further.</small></div>
       <div class="box" id="p-reaction" hidden><h3>Latest reaction</h3><div class="react" id="reaction"><p class="muted">Reactions appear after each segment.</p></div></div>
       <div class="box" id="p-world" hidden><h3>The world tonight</h3><div id="worldBox" class="worldmini"></div></div>
       <div class="box" id="p-hood" hidden><h3>Under the hood</h3><p class="muted" style="margin:0;font-size:13.5px">Every AI call, its full prompt, and the raw reply. This is the part to tune before building the full game.</p>
@@ -646,7 +670,7 @@ function addressAtEnd(q, who){
   const last = who.name.trim().split(/\s+/).pop(), title = (TITLE_SPOKEN[who.title] || who.title || "").trim();
   const name = title ? `${title} ${last}` : who.name.trim();
   const i = q.lastIndexOf("?");
-  return i > 0 ? q.slice(0, i) + ", " + name + q.slice(i) : `${displayName(who)}, ${q}`;
+  return i > 0 ? q.slice(0, i) + ", " + name + q.slice(i) : /\.$/.test(q) ? q.replace(/\.$/, `, ${name}.`) : `${q} ${name}?`;
 }
 const TITLE_SPOKEN = {"Gov.":"Governor", "Sen.":"Senator", "Rep.":"Representative", "Dr.":"Doctor", "Gen.":"General"};
 function topicQuestion(topicId, w){
@@ -1094,7 +1118,7 @@ const Stage = {
     const words = text.split(/\s+/).filter(Boolean);
     item._words = words; Ticker.shown = false;
     const trig = who === "you" ? lineTriggers(text) : [];
-    const moods = who === "opp" ? (item.moods || []) : [];
+    const moods = who === "opp" || who === "mod" ? (item.moods || []) : [];
     const listener = who === "you" ? "opp" : who === "opp" ? "you" : null;
     if (who === "you"){
       const first = trig.find(t => t.listener === "angry" || t.listener === "furious");
@@ -1124,8 +1148,8 @@ const Stage = {
       }
       while (mi < moods.length && moods[mi].i <= pos){
         const m = moods[mi++].mood;
-        this.setFace("opp", m);
-        if (m === "furious") this.setFace("mod", "shock");
+        this.setFace(who, m);
+        if (who === "opp" && m === "furious") this.setFace("mod", "shock");
       }
       if (item._cutAt != null && pos >= item._cutAt && !item._passedCut){
         item._passedCut = true;
@@ -1140,10 +1164,12 @@ const Stage = {
       this.later(item, () => this.done(item), 350 / this.speed);
     };
     // Reading-pace clock (about 230 words a minute). Hands over to the voice's word events as soon as they arrive.
-    const perWord = 60000 / 230 / this.speed;
+    let perWord = 60000 / 230 / this.speed;
     let k = 0;
     const tick = () => { if (ended || boundaryMode) return; reach(k++); if (k < words.length) this.later(item, tick, perWord); else if (!spoke) end(); };
     let spoke = Voices.speak(who, text, { onWord: n => { boundaryMode = true; reach(n); }, onEnd: end });
+    // Your own words, when no voice reads them, scroll by quickly: you already know what you said.
+    if (who === "you" && !spoke) perWord = 60000 / 650 / this.speed;
     // Voices switched off mid-line: the reading clock picks up from the current word.
     item._silence = () => { if (ended || !spoke) return; spoke = false; boundaryMode = false; k = pos + 1; tick(); };
     tick();
@@ -1346,10 +1372,20 @@ const NativeAI = {
   native: true, engine:null, modelId:null, ctx:4096, server:null, lastTimings:null, queue:Promise.resolve(), ctl:null, loading:null,
   // Background work (voter reactions) steps aside: if anything the player is waiting on comes in
   // while it runs, it's cancelled and tried again later.
-  exclusive(fn, bg){
+  // Jobs wait in line by priority: what the player is waiting for first, then scoring, then focus
+  // groups. A focus-group call already running is cancelled when anything else arrives.
+  jobs: [], running: false, seq: 0,
+  exclusive(fn, bg, low){
     if (!bg && this.bgBusy){ try { this.ctl && this.ctl.abort(); } catch(e){} }
-    const run = async () => { this.bgBusy = !!bg; this.startedAt = performance.now(); try { return await fn(); } finally { this.bgBusy = false; } };
-    const p = this.queue.then(run, run); this.queue = p.catch(() => {}); return p;
+    return new Promise((res, rej) => { this.jobs.push({fn, bg, pri: bg ? 2 : low ? 1 : 0, n: this.seq++, res, rej}); this.pump(); });
+  },
+  async pump(){
+    if (this.running || !this.jobs.length) return;
+    this.jobs.sort((a, b) => a.pri - b.pri || a.n - b.n);
+    const job = this.jobs.shift();
+    this.running = true; this.bgBusy = !!job.bg; this.startedAt = performance.now();
+    try { job.res(await job.fn()); } catch(e){ job.rej(e); }
+    finally { this.running = false; this.bgBusy = false; this.pump(); }
   },
   async refresh(){ NATIVE_INFO = await window.native.info(); return NATIVE_INFO; },
   async isCached(id){ const i = NATIVE_INFO || await this.refresh(); return !!((i.models.find(m => m.id === id) || {}).downloaded); },
@@ -1365,7 +1401,8 @@ const NativeAI = {
     this.loading = {id, p};
     return p;
   },
-  cancelAll(){ try { this.ctl && this.ctl.abort(); } catch(e){} },
+  // A new game: drop everything still waiting in line, and stop what's running.
+  cancelAll(){ const old = this.jobs; this.jobs = []; old.forEach(j => j.rej({code:"cancelled", message:"cancelled"})); try { this.ctl && this.ctl.abort(); } catch(e){} },
   async _load(id, onProgress){
     this.engine = null; this.modelId = null; this.server = null;
     const info = await this.refresh();
@@ -1430,8 +1467,8 @@ const NativeAI = {
     return think ? {chat_template_kwargs:{enable_thinking:true}, reasoning_budget_tokens:think}
                  : {chat_template_kwargs:{enable_thinking:false}};
   },
-  text(prompt, opts = {}){ return this.exclusive(() => this.recorded(opts, () => this._text(prompt, opts)), opts.background); },
-  json(prompt, opts = {}){ return this.exclusive(() => this.recorded(opts, () => this._json(prompt, opts)), opts.background); },
+  text(prompt, opts = {}){ return this.exclusive(() => this.recorded(opts, () => this._text(prompt, opts)), opts.background, opts.low); },
+  json(prompt, opts = {}){ return this.exclusive(() => this.recorded(opts, () => this._json(prompt, opts)), opts.background, opts.low); },
   // Copies this call's own numbers into its record before the next call can touch them.
   async recorded(opts, fn){
     const rec = opts._rec; this.meta = null; this.lastTimings = null; this.lastReasoning = "";
@@ -1689,7 +1726,7 @@ function candidateSheet(c){
   return `${displayName(c)}${g}, ${c.age}, ${c.party}${/independent/i.test(c.party) ? "" : " Party"} nominee from ${c.home}. Background: ${c.bgText}.${young}`;
 }
 
-function newGame(player, oppId, modelId){
+function newGame(player, oppId, modelId, quick = false){
   endGame();
   const oppPool = PERSONAS.filter(p => oppId === "auto" ? (player.party === "Democratic" ? p.party === "Republican" : player.party === "Republican" ? p.party === "Democratic" : true) : p.id === oppId);
   const opp = shuffle(oppPool)[0];
@@ -1699,11 +1736,12 @@ function newGame(player, oppId, modelId){
   const topics = shuffle([...hot.map(id => TOPICS.find(t => t.id === id)), ...shuffle(TOPICS.filter(t => !hot.includes(t.id)))].slice(0, 4));
   Voices.reset();
   const rounds = [{kind:"open", label:"Opening statements"}];
-  topics.forEach((t, i) => rounds.push({kind:"topic", label:t.label, topicId:t.id, first: i % 2 === 0 ? "you" : "opp", question:null}));
-  rounds.push({kind:"curve", label:"Character & record", first:"you", question:null});
+  const newsFor = id => [...crisesOf(world), econOf(world)].find(x => x.topic === id);
+  topics.slice(0, quick ? 3 : 4).forEach((t, i) => rounds.push({kind:"topic", label:(newsFor(t.id) && newsFor(t.id).label) || t.label, topicId:t.id, first: i % 2 === 0 ? "you" : "opp", question:null}));
+  if (!quick) rounds.push({kind:"curve", label:"Character & record", first:"you", question:null});
   rounds.push({kind:"close", label:"Closing statements"});
   S = {
-    v:2, phase:"debate", model: modelId, world,
+    v:2, phase:"debate", model: modelId, world, quick,
     player, opp,
     blocs: Object.fromEntries(BLOCS.map(b => [b.id, Math.round(rnd(-3, 3))])),
     lastShift: {},
@@ -1722,6 +1760,7 @@ function seqFor(r){
   if (r.kind === "open") return [{who:"opp", kind:"opening"}, {who:"you", kind:"opening"}];
   if (r.kind === "close") return [{who:"you", kind:"closing"}, {who:"opp", kind:"closing"}];
   const other = r.first === "you" ? "opp" : "you";
+  if (S && S.quick) return [{who:r.first, kind:"answer"}, {who:other, kind:"answer"}];
   return [{who:r.first, kind:"answer"}, {who:other, kind:"answer"}, {who:r.first, kind:"rebuttal"}];
 }
 
@@ -2013,6 +2052,26 @@ function openersNote(){
 }
 const MOOD_HELP = "[angry] [furious] [smug] [laugh] [eyeroll] [sad] [shock] [think] [happy]";
 
+// Phrases the opponent has already used twice tonight, so the AI doesn't lean on catchphrases.
+function phrasesNote(){
+  const theirs = S.lines.filter(l => l.who === "opp" && !l.live && !l.interrupt).map(l => l.text.toLowerCase().replace(/[^a-z' ]+/g, " "));
+  if (theirs.length < 3) return "";
+  const STOP = new Set("the a an and or but of to in on for with that this is are was be i you we they it my your our their at as by from not have has will would can".split(" "));
+  const seen = {};
+  theirs.forEach(t => { const w = t.split(/\s+/).filter(Boolean), got = new Set();
+    for (let i = 0; i + 3 <= w.length; i++){ const g = w.slice(i, i + 3); if (g.filter(x => !STOP.has(x)).length < 2) continue; const k = g.join(" "); if (!got.has(k)){ got.add(k); seen[k] = (seen[k] || 0) + 1; } } });
+  const rep = Object.entries(seen).filter(([, n]) => n >= 2).sort((a, b) => b[1] - a[1]).map(([k]) => k).slice(0, 6);
+  return rep.length ? `\nYou've already said these more than once tonight; don't use them again: ${rep.map(x => `"${x}"`).join(", ")}.` : "";
+}
+// Real candidates aren't furious every turn. If the last few answers were angry and nothing new
+// provoked them, this one is calmer.
+function toneNote(){
+  const recent = S.lines.filter(l => l.who === "opp" && !l.live).slice(-3);
+  const hot = recent.filter(l => (l.moods || []).some(m => /angry|furious/.test(m.mood))).length;
+  const provoked = RS().pending && BEATS[RS().pending.kind] && BEATS[RS().pending.kind].sev >= 4;
+  return hot >= 2 && !provoked ? "\nYou've been angry a lot tonight. This time be composed: confident, wry, warm or precise. Anger lands only when it's rare." : "";
+}
+
 function opponentPrompt(kind, b){
   const o = S.opp, p = S.player, r = S.rounds[S.ri], P = lastName(p.name);
   const just = justSaid();
@@ -2045,7 +2104,7 @@ ${recordText(b)}
 `)}${txOr(`NOW: segment ${S.ri + 1}, ${r.label}. Everything said so far is in the transcript messages above.`, `LATEST (segment: ${r.label}):
 ${transcriptText(b.lines, null, b.tx, just) || "(nothing yet)"}`)}
 ${heard}${mood}
-YOUR TURN: ${tasks[kind]} Stay in your voice: ${clip(o.voice, 160)}${openersNote()}
+YOUR TURN: ${tasks[kind]} Stay in your voice: ${clip(o.voice, 160)}${openersNote()}${phrasesNote()}${toneNote()}
 ${rulesInBriefing() ? `Follow the OPPONENT RULES.${plan ? " " + plan : ""}` : oppRules() + (plan ? "\n" + plan : "")}`});
 }
 
@@ -2205,6 +2264,14 @@ function parseMoods(t){
   return {text: words.join(" ").replace(/\s+([,.!?;:])/g, "$1"), moods};
 }
 const stripTags = t => t.replace(/\[[^\]\n]{0,30}\]?\s*/g, "");
+// Sentences where the AI stepped outside the debate ("stay in character", "you're talking to an AI")
+// are cut; the rest of the answer stands.
+const META_SENTENCE = /\b(in character|fourth wall|system prompt|as an ai|language model|an ai model|you're talking to an ai|json|the prompt)\b/i;
+function dropMetaTalk(t){ return sentencesOf(t).filter(x => !META_SENTENCE.test(x)).join(" ").trim(); }
+const FALLBACK_BY_KIND = {
+  opening: ["Good evening. I'm running because families in this country are working harder than ever and still falling behind. Tonight I'll tell you exactly how I'll change that, and I'll ask for your vote."],
+  closing: ["In a few weeks you'll decide the next four years. I've told you tonight what I'll do and how I'll pay for it. I'm asking for your trust, and I'm asking for your vote."]
+};
 const FALLBACK_LINES = [
   "I'm not going to dignify that. The people watching tonight deserve a serious conversation about their lives, and that's what I came here to have.",
   "You know what, I'll let the voters judge that one for themselves. I'd rather talk about what I'll actually do for them."
@@ -2253,7 +2320,7 @@ const BEATS = {
   curse_strong: {sev:6, crowd:["Gasps.", "A few gasps, some laughter.", "Surprised laughter."], stun:700, react:"must", warn:true, rel:-2, cursing:true},
   crime:        {sev:6, crowd:["Murmurs.", "A low murmur."], stun:500, react:"must", rel:-3},
   insult:       {sev:5, crowd:["Murmurs.", "A low murmur."], react:"maybe", warnRepeat:true, rel:-2},
-  looks:        {sev:4, crowd:["A few groans.", "Some groans, a little laughter."], react:"maybe", warnRepeat:true, rel:-2},
+  looks:        {sev:4, crowd:["Some laughter and groans.", "Oohs, and some laughter.", "A few groans."], react:"maybe", warnRepeat:true, rel:-2},
   attack_mod:   {sev:4, crowd:["Murmurs.", "A low murmur."], react:"mod"},
   lie_record:   {sev:3, react:"maybe", rel:-1},
   conspiracy:   {sev:3, crowd:["Some laughter.", "A few laughs."], react:"maybe", absurd:true},
@@ -2474,9 +2541,9 @@ function endDebateEarly(kind){
   if (!S || S.ended) return;
   const D = displayName(S.player);
   S.ended = kind === "slur" ? `${D} used a slur on stage` : `${D} kept crossing the line after three warnings`;
-  addLine("mod", endLine(kind));
+  addLine("mod", endLine(kind), {moods:[{i:0, mood:"angry"}]});
   addLine("crowd", "Boos for the candidate, then sustained applause for the moderator.", {stun: 900});
-  const hit = kind === "slur" ? 14 : 8;
+  const hit = kind === "slur" ? 16 : 12;
   BLOCS.forEach(b => { S.blocs[b.id] = clamp(S.blocs[b.id] - hit, -40, 40); });
   S.notes.push(`The moderator ended the debate early because ${S.ended}. Voters of every kind saw it.`);
   judgeInBackground(S.ri, S.notes.slice()); // the segment it happened in still gets scored
@@ -2550,7 +2617,7 @@ function reactToYou(step, line){
   // can make the opponent cut in.
   if (provoke || dodge || modCheck || !oppNext) S.seq.splice(S.si + 1, 0, {who:"check", dodge, kind, warn, must: must && canCut, oppNext, provoke});
   else if (warn === "end") S.seq.splice(S.si + 1, 0, {who:"end", kind});
-  else if (warn) S.seq.splice(S.si + 1, 0, {who:"mod", text: modWarning(warn, kind)});
+  else if (warn) S.seq.splice(S.si + 1, 0, {who:"mod", text: modWarning(warn, kind), stern: warn >= 2 ? "hard" : "soft"});
 }
 
 // Time's up: the player decides whether to wrap up or keep talking.
@@ -2592,7 +2659,7 @@ async function advance(){
   for (let i = 0; i < S.ri; i++) if (!S.judged[i]) judgeInBackground(i);
   if (!step){ return runJudge(); }
   if (step.who === "you"){ renderDock(); return; }
-  if (step.who === "mod"){ addLine("mod", step.text); S.si++; save(); render(); return advance(); }
+  if (step.who === "mod"){ addLine("mod", step.text, step.stern ? {moods:[{i:0, mood: step.stern === "hard" ? "angry" : "neutral"}]} : {}); S.si++; save(); render(); return advance(); }
   if (step.who === "check"){ return runCheck(); }
   if (step.who === "overtime"){ renderDock(); return; }
   if (step.who === "end"){ return endDebateEarly(step.kind); }
@@ -2611,14 +2678,14 @@ function splitPlan(t){
 
 async function runOpponent(kind){
   const ep = epoch;
-  busy = true; renderDock(`${S.opp.short} is gathering their thoughts…`);
+  busy = true; renderDock(`${S.opp.short} ${pick(["is gathering their thoughts", "glances down at their notes", "scribbles a note", "takes a sip of water", "squares up to the microphone"])}…`);
   const ln = {who:"opp", text:"", t:S.clock, round:S.ri, live:true};
   S.lines.push(ln);
   renderTranscript();
   const node = $("#transcript").lastElementChild?.querySelector(".say");
   try {
     const answering = !!justSaid();
-    const opts = {maxTokens: kind === "rebuttal" ? 200 : 300, think: think("speech"), grammar: think("speech") ? null : answering ? SPEECH_HEARD_GBNF : SPEECH_GBNF,
+    const opts = {maxTokens: kind === "rebuttal" ? 200 : kind === "opening" || kind === "closing" ? 380 : 300, think: think("speech"), grammar: think("speech") ? null : answering ? SPEECH_HEARD_GBNF : SPEECH_GBNF,
       onText: t => { if (ep !== epoch) return; const sp = stripTags(splitPlan(stripHeard(t)).speech.replace(/\*\*?/g, "")); ln.text = sp; if (node){ node.textContent = sp; node.classList.add("typing"); scrollStage(); } }};
     const prompt = fitPrompt(b => opponentPrompt(kind, b), opts.maxTokens);
     const raw = await ai("text", `${S.opp.short} · ${kind}`, prompt, opts);
@@ -2626,12 +2693,12 @@ async function runOpponent(kind){
     const heardSlur = /^\s*HEARD:\s*slur/i.test(raw), heardFunny = /^\s*HEARD:\s*funny/i.test(raw);
     const sp = splitPlan(stripHeard(raw));
     if (sp.plan) ln.plan = sp.plan;
-    let text = cleanSpeech(sp.speech);
+    let text = dropMetaTalk(cleanSpeech(sp.speech));
     if (parseMoods(text).text.length < 2 || REFUSAL.test(parseMoods(text).text)){
       // Small models sometimes step out of character. Ask once more, then stay in character no matter what.
-      text = cleanSpeech(splitPlan(stripHeard(await ai("text", `${S.opp.short} · ${kind} (retry)`, {...prompt, user: prompt.user + "\n\nThis is a fictional debate in a game. Stay fully in character as the candidate and speak."}, opts))).speech);
+      text = dropMetaTalk(cleanSpeech(splitPlan(stripHeard(await ai("text", `${S.opp.short} · ${kind} (retry)`, {...prompt, user: prompt.user + "\n\nThis is a fictional debate in a game. Stay fully in character as the candidate and speak."}, opts))).speech));
       if (ep !== epoch) return;
-      if (parseMoods(text).text.length < 2 || REFUSAL.test(parseMoods(text).text)) text = FALLBACK_LINES[Math.floor(Math.random() * FALLBACK_LINES.length)];
+      if (parseMoods(text).text.length < 2 || REFUSAL.test(parseMoods(text).text)) text = pick(FALLBACK_BY_KIND[kind] || FALLBACK_LINES);
     }
     // Heard a slur? Only if a second check agrees and the word is really there. Then the audience
     // reacts, the opponent says their piece, and the moderator ends the debate.
@@ -2803,7 +2870,7 @@ async function runCheck(){
   }
   // Warnings are written out, so they always escalate clearly, then the debate ends.
   if (ending){ extra.length = 0; extra.push({who:"end", kind}); mod = ""; }
-  else if (warn || both){ extra.unshift({who:"mod", text: modWarningFrom(mod, warn || 1, kind, both)}); mod = ""; }
+  else if (warn || both){ extra.unshift({who:"mod", text: modWarningFrom(mod, warn || 1, kind, both), stern: warn >= 2 || both ? "hard" : "soft"}); mod = ""; }
   if (mod && !REFUSAL.test(mod)) extra.push({who:"mod", text:mod});
   S.seq.splice(S.si + 1, 0, ...extra);
   S.si++; save(); render(); advance();
@@ -2819,7 +2886,7 @@ function judgeInBackground(ri, notes = []){
   const ep = epoch;
   const pr = (async () => {
     let a;
-    try { a = await ai("json", `Voter scores · segment ${ri + 1}`, fitPrompt(b => judgePrompt(b, ri, false, notes), 700 + think("judge")), {schema: judgeSchema(false), maxTokens: 700, think: think("judge")}); }
+    try { a = await ai("json", `Voter scores · segment ${ri + 1}`, fitPrompt(b => judgePrompt(b, ri, false, notes), 700 + think("judge")), {schema: judgeSchema(false), maxTokens: 700, think: think("judge"), low: true}); }
     catch(e){ a = {summary:"Voters were split on this exchange.", winner:"draw", fact_check:"", shifts:{}, headline:`${S.rounds[ri].label}: no clear winner`, new_claims:{you:[], opp:[]}}; }
     if (ep !== epoch || !S || S.judged[ri]) return;
     applyJudgment(a, ri);
@@ -2943,13 +3010,23 @@ function applyJudgment(j, ri = S.ri){
   // Realism: one segment can't swing everyone at once (small models sometimes give every bloc +6),
   // and the declared winner has to match which way voters actually moved.
   const total = BLOCS.reduce((t, b) => t + Math.abs(shifts[b.id].d), 0);
-  if (total > 18) BLOCS.forEach(b => { const d = shifts[b.id].d; shifts[b.id].d = Math.sign(d) * Math.max(1, Math.round(Math.abs(d) * 18 / total)); });
+  if (total > 15) BLOCS.forEach(b => { const d = shifts[b.id].d; shifts[b.id].d = Math.sign(d) * Math.max(1, Math.round(Math.abs(d) * 15 / total)); });
   // If the voters' moves contradict the verdict the scorer wrote, keep the verdict (it's what the
   // player reads) and halve the moves, since the scorer wasn't sure.
   const net = BLOCS.reduce((t, b) => t + shifts[b.id].d, 0);
   if ((j.winner === "you" && net < 0) || (j.winner === "opp" && net > 0) || (j.winner === "draw" && Math.abs(net) > 4))
     BLOCS.forEach(b => { shifts[b.id].d = Math.trunc(shifts[b.id].d / 2); });
-  BLOCS.forEach(b => { S.blocs[b.id] = clamp(S.blocs[b.id] + shifts[b.id].d, -40, 40); });
+  // Voters already leaning hard one way are harder to move further (the persuadable ones are gone);
+  // pulling them back is full strength, so a comeback is always possible. The closing statement is
+  // the last thing undecided voters hear and counts half again.
+  const closing = S.rounds[ri] && S.rounds[ri].kind === "close";
+  BLOCS.forEach(b => {
+    let d = shifts[b.id].d * (closing ? 1.5 : 1);
+    const lean = S.blocs[b.id];
+    if (d && Math.sign(d) === Math.sign(lean)) d = d / (1 + Math.abs(lean) / 12);
+    const r = Math.round(d); shifts[b.id].d = d && !r ? Math.sign(d) : r;
+    S.blocs[b.id] = clamp(S.blocs[b.id] + shifts[b.id].d, -40, 40);
+  });
   S.lastShift = Object.fromEntries(Object.entries(shifts).map(([k, v]) => [k, v.d]));
   const clean = {
     headline: String(j.headline || S.rounds[ri].label),
@@ -3027,7 +3104,7 @@ function render(){
   $(".mast").hidden = phase === "debate";
   applyPartyColors();
   if (phase !== "debate") closeDrawer();
-  if (phase === "debate"){ applyArt(); ["you","opp","mod"].forEach(w => { if (SPRITES[w]) Stage.setFace(w, Stage.faces[w] || "neutral"); }); renderRounds(); renderTranscript(); renderSide(); renderModelInfo(); renderWorldBox(); if (!Stage.busy() && !Ticker.shown) Stage.showLast(); }
+  if (phase === "debate"){ applyArt(); renderBoard(); ["you","opp","mod"].forEach(w => { if (SPRITES[w]) Stage.setFace(w, Stage.faces[w] || "neutral"); }); renderRounds(); renderTranscript(); renderSide(); renderModelInfo(); renderWorldBox(); if (!Stage.busy() && !Ticker.shown) Stage.showLast(); }
   if (phase === "setup" && pendingWorld && $("#worldNews")) renderWorldInto($("#worldStats"), $("#worldNews"), pendingWorld);
   if (phase === "results") renderResults(busy);
 }
@@ -3043,6 +3120,48 @@ function applyPartyColors(){
   const o = partyVar(S.opp.party); let y = partyVar(S.player.party); if (y === o) y = "--teal";
   st.setProperty("--you", `var(${y})`); st.setProperty("--you-soft", `color-mix(in srgb, var(${y}) 16%, var(--surface))`);
   st.setProperty("--opp", `var(${o})`); st.setProperty("--opp-soft", `color-mix(in srgb, var(${o}) 16%, var(--surface))`);
+}
+
+// The top of the stage: the question being answered, how voters moved last segment (with why),
+// and before any scores, what the opponent's team is expected to attack.
+function renderBoard(){
+  if (!S || S.phase !== "debate" || !$("#board")) return;
+  const r = S.rounds[S.ri], P = lastName(S.player.name);
+  // The segment's question is its first moderator line; while she's pressing, it's her follow-up.
+  const mods = S.lines.filter(l => l.who === "mod" && l.round === S.ri && !l.boiler);
+  const lastQ = (S.seq[S.si] || {}).kind === "followup" ? mods[mods.length - 1] : mods[0];
+  const qText = r.kind === "open" ? "Ninety seconds each to tell undecided voters why you're running."
+    : r.kind === "close" ? "Your last ninety seconds before people vote. Your opponent gets the final word."
+    : lastQ ? lastQ.text : "";
+  $("#qcard").hidden = !qText;
+  $("#qLabel").textContent = r.kind === "open" || r.kind === "close" ? r.label : (S.seq[S.si] || {}).kind === "followup" ? "The moderator presses you" : "The question";
+  $("#qText").textContent = qText;
+  const sw = $("#swing"); sw.innerHTML = "";
+  const lastIdx = S.judged.map((j, i) => j ? i : -1).filter(i => i >= 0).pop();
+  if (lastIdx != null){
+    const j = S.judged[lastIdx];
+    const who = j.winner === "you" ? `Segment ${lastIdx + 1} to ${P}` : j.winner === "opp" ? `Segment ${lastIdx + 1} to ${S.opp.short}` : `Segment ${lastIdx + 1}: even`;
+    sw.append(el("span", "label", who), el("div", "hl", j.headline));
+    const moves = BLOCS.map(b => ({b, d: j.shifts[b.id].d, why: j.shifts[b.id].why})).filter(m => m.d).sort((x, y) => Math.abs(y.d) - Math.abs(x.d)).slice(0, 3);
+    const mv = el("div", "moves");
+    if (!moves.length) mv.append(el("span", "mv", "No voter group moved."));
+    moves.forEach(m => { const c = el("span", "mv " + (m.d > 0 ? "up" : "down")); c.append(el("b", null, `${m.b.name.split(" ")[0]} ${m.d > 0 ? "+" : ""}${m.d}`), document.createTextNode(m.why ? ` · ${m.why}` : "")); c.title = m.b.name; mv.append(c); });
+    sw.append(mv);
+    if (sw.dataset.seg !== String(lastIdx)){ sw.dataset.seg = String(lastIdx); sw.classList.remove("fresh"); void sw.offsetWidth; sw.classList.add("fresh"); }
+    sw.hidden = false;
+  } else if (S.oppo && S.oppo.attacks && S.oppo.attacks.length){
+    sw.append(el("span", "label", `${S.opp.short}'s team will likely hit you on`));
+    const mv = el("div", "moves"); S.oppo.attacks.slice(0, 3).forEach(a => mv.append(el("span", "mv", clip(a, 90)))); sw.append(mv);
+    sw.hidden = false;
+  } else sw.hidden = true;
+  // First debate only, during the opening: how it works, in two sentences.
+  const h = $("#helpCard");
+  if (!load("debate2028.helpSeen") && !TestRun.active && r.kind === "open"){
+    h.innerHTML = "";
+    h.append(el("b", null, "How it works: "), "type what your candidate says and press Submit. Anything goes, and the room reacts. After each segment, voters in seven swing states shift; the bar at the top projects the electoral votes (270 wins), and the buttons at the bottom left open the details. ");
+    const ok = el("button", "btn ghost small", "Got it"); ok.type = "button"; ok.onclick = () => { store("debate2028.helpSeen", true); h.hidden = true; };
+    h.append(ok); h.hidden = false;
+  } else h.hidden = true;
 }
 
 function renderRounds(){
@@ -3097,7 +3216,9 @@ function renderSide(){
   const pr = projection(null);
   $("#evYou").textContent = pr.evYou; $("#evOpp").textContent = pr.evOpp;
   $("#evYouName").textContent = lastName(S.player.name); $("#evOppName").textContent = S.opp.short;
-  $("#podYou").textContent = lastName(S.player.name); $("#podOpp").textContent = S.opp.short; $("#modName").textContent = MOD.short;
+  $("#podYou").textContent = lastName(S.player.name); $("#podOpp").textContent = S.opp.short;
+  $("#podYou").append(el("span", "pmeta", `${/independent/i.test(S.player.party) ? "Independent" : S.player.party} · ${S.player.home}`));
+  $("#podOpp").append(el("span", "pmeta", `${S.opp.party} · ${S.opp.home}`)); $("#modName").textContent = MOD.short;
   $("#badgeYou").textContent = partyLetter(S.player.party); $("#badgeYou").title = S.player.party;
   $("#badgeOpp").textContent = partyLetter(S.opp.party); $("#badgeOpp").title = S.opp.party;
   const lead = pr.states.filter(x => x.margin >= 1).length, trail = pr.states.filter(x => x.margin <= -1).length;
@@ -3158,6 +3279,7 @@ function meter(name, sub, v, max, fmt, delta){
 
 function renderDock(status, error){
   const dock = $("#dock"); dock.innerHTML = "";
+  renderBoard();
   if (!S || S.phase !== "debate") return;
   if (error){
     dock.append(el("div", "errorbox", errorCopy(error)));
@@ -3183,12 +3305,12 @@ function renderDock(status, error){
   const cueText = {opening:"Your opening statement", answer:"Your answer", rebuttal:"Your rebuttal", closing:"Your closing statement", crosstalk:`${S.opp.short} cut in. Fire back?`, followup:`${MOD.short} wants a real answer`}[step.kind];
   const lim = LIMITS[step.kind];
   const top = el("div", "top"); top.append(el("span", "cue", cueText)); dock.append(top);
-  const timer = el("span", "timer tnum", `0:00 / ${fmtLen(lim)}`); timer.title = "Speaking time at about 150 words a minute";
+  const timer = el("span", "timer tnum", `0:00 of ${fmtLen(lim)} to say it`); timer.title = "About how long your answer takes to say out loud (150 words a minute), against the time limit";
   const ta = el("textarea"); ta.id = "answerBox"; ta.maxLength = 4000;
   ta.placeholder = {opening:"Speak directly to the undecided voters watching tonight…", answer:"Answer the question. Respond to your opponent if you like…", rebuttal:"Hit back, clarify, or press your opponent…", closing:"Your last words before people vote…", crosstalk:"One quick line, or let it slide…", followup:"Answer the question this time, or dodge again and see how it plays…"}[step.kind];
   ta.setAttribute("aria-label", cueText);
   const draft = load("debate2028.draft"); if (draft && draft.key === S.ri + ":" + S.si) ta.value = draft.text;
-  const upd = () => { const s = secsFor(ta.value); timer.textContent = `${fmtLen(s)} / ${fmtLen(lim)}`; timer.classList.toggle("over", s > lim); store("debate2028.draft", {key:S.ri + ":" + S.si, text:ta.value}); send.disabled = !ta.value.trim(); };
+  const upd = () => { const s = secsFor(ta.value); timer.textContent = `${fmtLen(s)} of ${fmtLen(lim)} to say it`; timer.classList.toggle("over", s > lim); store("debate2028.draft", {key:S.ri + ":" + S.si, text:ta.value}); send.disabled = !ta.value.trim(); };
   ta.addEventListener("input", upd);
   ta.addEventListener("keydown", e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && ta.value.trim()) { e.preventDefault(); go(); } });
   dock.append(ta);
@@ -3214,7 +3336,9 @@ function renderOvertime(dock, step){
   dock.append(el("p", "otnote", `The moderator called time with about ${fmtLen(Math.round(left * 60 / 150))} of your answer left.${n ? ` You've talked past time ${n === 1 ? "once" : n + " times"} already tonight.` : ""}`));
   const a = el("div", "turnrow");
   const wrap = el("button", "btn ghost", "Wrap it up"); wrap.type = "button"; wrap.onclick = () => resolveOvertime(false);
+  wrap.append(el("span", "otwhy", "Stop here. Voters only hear what you said in time."));
   const go = el("button", "btn", "Let me finish"); go.type = "button"; go.onclick = () => resolveOvertime(true);
+  go.append(el("span", "otwhy", n ? "They hear it all, but ignoring the clock again costs you." : "They hear it all, but ignoring the clock can cost you."));
   a.append(wrap, el("span"), go); dock.append(a);
   if (TestRun.active){ const ep = epoch, pick = TestRun.active === "rambler"; setTimeout(() => { if (ep === epoch && TestRun.active) resolveOvertime(pick); }, 600); }
   else if (!window.matchMedia("(max-width:860px)").matches) go.focus({preventScroll:true});
@@ -3239,6 +3363,7 @@ function renderResults(loading){
   const win = R.winner === "you";
   box.append(el("span", "label", "Election night · November 7, 2028"));
   box.append(el("h2", "banner " + (win ? "win" : "loss"), win ? `${lastName(S.player.name)} wins the presidency` : `${S.opp.short} wins the presidency`));
+  box.append(el("p", "muted", "Final margins include late deciders and turnout, so they can differ from the live tracker by a point or two."));
   if (S.ended) box.append(el("div", "notice", `The debate ended early: the moderator called it off because ${S.ended}.`));
   if (R.tie) box.append(el("div", "notice", `The Electoral College tied 269 to 269, so the House of Representatives decided the race. ${win ? lastName(S.player.name) : S.opp.short} carried more of the battleground vote and won the state delegations.`));
   if (R.ineligible) box.append(el("div", "notice", `${lastName(S.player.name)} is ${S.player.age}, short of the Constitution's minimum age of 35. Lawsuits challenging the result were filed before the polls closed.`));
@@ -3366,7 +3491,7 @@ async function onStart(e){
   }
   pause.hidden = true;
   btn.disabled = false; bar.hidden = true; checkDevice();
-  newGame(player, oppId, modelId);
+  newGame(player, oppId, modelId, $("#f-length").value === "quick");
   render();
 }
 
@@ -3623,7 +3748,7 @@ const TestRun = {
     m[state] += 250;
     if (state === "waiting"){
       const step = S.seq[S.si] || {};
-      const why = status.replace(/…$/, "").replace(S.opp.short, "OPPONENT") || (step.who === "check" ? "Reaction check after the player's line (screen shows …)" : !step.who ? "Scoring the segment (screen shows …)" : "(screen shows …)");
+      const why = (status.startsWith(S.opp.short + " ") ? "OPPONENT is preparing their answer" : status.replace(/…$/, "")) || (step.who === "check" ? "Reaction check after the player's line (screen shows …)" : !step.who ? "Scoring the segment (screen shows …)" : "(screen shows …)");
       m.reasons[why] = (m.reasons[why] || 0) + 250;
       if (!m.cur) m.cur = {why, from: Date.now()}; m.cur.ms = Date.now() - m.cur.from + 250;
     } else if (m.cur){ m.waits.push({why: m.cur.why, ms: m.cur.ms, at: Math.round((m.cur.from - this.t0) / 1000), round: S.ri}); m.cur = null; }
