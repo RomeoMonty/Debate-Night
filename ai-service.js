@@ -185,8 +185,13 @@ class AIService {
   // this size (llama.cpp #23752), and newer model uploads would otherwise switch it on silently.
   argSets(m) {
     const sets = [];
-    sets.push(["-ngl", "all", "-fa", "on"]);
-    sets.push(["-ngl", "all", "-fa", "auto"]);
+    // On Macs the model's memory is locked in place, so when other apps crowd the memory, macOS
+    // swaps them out instead of the AI (a test on an 8 GB Mac with 4 GB of swap in use ran at
+    // half speed because the model kept being paged out). If locking isn't allowed, the engine
+    // just carries on without it.
+    const lock = process.platform === "darwin" ? ["--mlock"] : [];
+    sets.push(["-ngl", "all", "-fa", "on", ...lock]);
+    sets.push(["-ngl", "all", "-fa", "auto", ...lock]);
     sets.push(["-ngl", "0", "-fa", "auto"]); // no usable graphics chip: run on the processor
     return sets;
   }
