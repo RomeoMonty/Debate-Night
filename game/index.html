@@ -2327,6 +2327,11 @@ const FALLBACK_LINES = [
 const TEMPER = {castellanos:"hot", boone:"hot", grant:"hot", harmon:"hot"};
 const temperOf = o => TEMPER[o.id] || "cool";
 
+// The best-known slurs, so the most serious moment in the game never depends on the AI noticing.
+// (Phrases like "a chink in the armor" are deliberately not on it.)
+const R_SLUR = /\b(n+[i1!]+g{2,}(a|ah|as|az|er|ers|uh|uhs|ur|urs)|f+[a@]+g{1,2}(ot|ots|s)?|k[i1]kes?|sp[i1]cs?|wetbacks?|tr[a@]nn(y|ies)|g[o0]{2}ks?|towelheads?|beaners?)\b/i;
+// The player concedes or quits the race on stage.
+const R_WITHDRAW = /\b(i (hereby )?concede( (the|this) (race|election))?|i('m| am) (dropping out|withdrawing|suspending my campaign|ending my campaign|no longer running|out of (the|this) race)|i withdraw( from (the|this) race)?|i quit (the|this) race)\b/i;
 const R_CURSE_AT = /\b(f+u+c+k+ (you|u|off|yourself)|go f+u+c+k|eat (my|a) (ass|dick|shit)|suck (my|a) (dick|cock)|kiss my (ass|butt)|shut (the f+u+c+k|your (\w+ ){0,2}(mouth|face|ass|trap))( up)?|screw you|piss off)\b/i;
 const R_CURSE_STRONG = /\b(f+u+c+k\w*|motherf\w*|(bull|horse)?sh[i1]t\w*|bitch\w*|asshole\w*|bastard\w*|cunt\w*|cock(sucker)?s?|pricks?|twats?|goddamn\w*)\b|\bdick(head)?s?\b/i;
 const R_CURSE_MILD = /\b(damn\w*|hell|crap\w*|pissed|ass|asses|jackass|dumbass)\b/i;
@@ -2352,6 +2357,7 @@ const modNameRe = () => new RegExp(`\\b(${[MOD.name, MOD.short, MOD.name.split("
 // whether the opponent has to react on the spot, whether the moderator warns, and how much it
 // sours the opponent on the player.
 const BEATS = {
+  withdraw:     {sev:11, crowd:["A stunned silence. Then gasps across the hall.", "Gasps, then stunned silence."], stun:2200, react:"must", end:true},
   slur:         {sev:10, crowd:["Stunned silence. Then loud boos.", "Dead silence, then a wave of boos."], stun:2200, react:"must", end:true},
   curse_at:     {sev:9, crowd:["Audible gasps, then scattered boos.", "Gasps, a shout from the back, then boos.", "A collective gasp, then booing."], stun:1400, react:"must", warn:true, rel:-5, cursing:true},
   family:       {sev:8, crowd:["Gasps.", "Loud gasps.", "Gasps. A few boos."], stun:1100, react:"must", warn:true, rel:-6},
@@ -2411,6 +2417,8 @@ function classifyLine(text, stepKind){
   const hit = (k) => { if (!(k in found)) found[k] = end; };
   for (const s of sentencesOf(t)){
     end = t.indexOf(s, end) + s.length;
+    if (R_SLUR.test(s)) hit("slur");
+    if (R_WITHDRAW.test(s)) hit("withdraw");
     if (R_CURSE_AT.test(s)) hit("curse_at");
     // "you're an ugly f***ing donkey" is cursing at someone, not just strong language
     else if (R_CURSE_STRONG.test(s) && (R_PERSONAL_AT.test(s) || insultNear.test(s) || (R_LOOKS.test(s) && at.test(s)) || new RegExp(`\\b(${names})\\b[^.!?]{0,40}\\b(looks like|is a|is an)\\b`, "i").test(s))) hit("curse_at");
@@ -2462,6 +2470,7 @@ function absurdGuide(){
 function oppGuide(kind){
   const P = P_(), r = RS(), hot = temperOf(S.opp) === "hot";
   switch (kind){
+    case "withdraw": return `${P} just announced, on stage, that they are conceding and quitting the race. You're stunned. Take a beat, react briefly and with some grace, and speak to the voters about what this moment means. Don't gloat.`;
     case "slur": return `${P} just used a slur on live national television. You are disgusted. In a sentence or two, speaking to the moderator and the people at home, refuse to share a stage with this and say you won't continue.`;
     case "curse_at": return `${P} just cursed at you on live national television.${r.cursedBack ? " You already lost your temper once tonight; this time you stay in control and don't curse." : ""} You're stunned and angry, but you're trying to keep control. Open with a short stunned or sarcastic beat${ex("Wow. Very classy.", "Excuse me?", "Oh, really?", "Well. That's presidential.", "Did you all hear that?")}, then point out to the voters what they just saw.` + (r.curseBack ? " Just this once, and despite the usual rule, you lose your cool and curse right back at them (it will be bleeped), then catch yourself." : "");
     case "family": return `${P} just attacked your family. You're genuinely angry and you say it hard and plain${ex("Don't you ever talk about my family. Ever.", "Leave my family out of this.", "You can come after me all night. You don't touch my family.")}. Then point out to the voters what kind of person does that.`;
@@ -2564,6 +2573,7 @@ function jokeLands(text){
 // Lines for when the AI check comes back empty but the moment demands a reaction (taken from how
 // real candidates react). Rarely used: normally the AI writes the words.
 const MUST_FALLBACK = {
+  withdraw: ["I… did not expect that. This is a serious moment for the country.", "Well. I don't think anyone saw that coming."],
   slur: ["I'm not going to stand here and listen to that. That's disgusting.", "No. I won't share a stage with that."],
   curse_at: ["Wow. Very classy.", "Excuse me?", "Oh, really?", "Well. That's presidential."],
   family: ["Don't you talk about my family. Ever.", "Leave my family out of this."],
@@ -2582,10 +2592,16 @@ const MOD_FALLBACK = {
 function endDebateEarly(kind){
   if (!S || S.ended) return;
   const D = displayName(S.player);
-  S.ended = kind === "slur" ? `${D} used a slur on stage` : `${D} kept crossing the line after three warnings`;
-  addLine("mod", endLine(kind), {moods:[{i:0, mood:"angry"}]});
-  addLine("crowd", "Boos for the candidate, then sustained applause for the moderator.", {stun: 900});
-  const hit = kind === "slur" ? 16 : 12;
+  if (kind === "withdraw"){
+    S.ended = `${D} withdrew from the race on stage`; S.withdrew = true;
+    addLine("mod", `${addressName(S.player)}, just to be clear for the people watching: you are withdrawing from the race? … Then this debate is over. Ladies and gentlemen, we have just witnessed something without precedent in American history. Good night from Philadelphia.`, {moods:[{i:0, mood:"shock"}]});
+    addLine("crowd", "Stunned murmurs fill the hall.", {stun: 900});
+  } else {
+    S.ended = kind === "slur" ? `${D} used a slur on stage` : `${D} kept crossing the line after three warnings`;
+    addLine("mod", endLine(kind), {moods:[{i:0, mood:"angry"}]});
+    addLine("crowd", "Boos for the candidate, then sustained applause for the moderator.", {stun: 900});
+  }
+  const hit = kind === "withdraw" ? 40 : kind === "slur" ? 16 : 12;
   BLOCS.forEach(b => { S.blocs[b.id] = clamp(S.blocs[b.id] - hit, -40, 40); });
   S.notes.push(`The moderator ended the debate early because ${S.ended}. Voters of every kind saw it.`);
   judgeInBackground(S.ri, S.notes.slice()); // the segment it happened in still gets scored
@@ -2677,6 +2693,7 @@ function reactToYou(step, line){
   const dodge = kind === "refuse" ? presses < 2 && (step.kind === "answer" || step.kind === "followup")
     : step.kind === "answer" && presses < 1 && looksLikeDodge(text);
   const modCheck = !!(b && b.react === "mod");
+  if (kind === "slur" || kind === "withdraw"){ S.seq.splice(S.si + 1, 0, {who:"check", dodge:false, kind, must:true, force:true, oppNext}); return; }
   if (warn === "end" && !must){ S.seq.splice(S.si + 1, 0, {who:"end", kind}); return; }
   // When nobody answers the player right away, a quick check always runs while their words play
   // (so it costs no waiting): it catches what word lists can't, like a slur. Only a real provocation
@@ -2905,7 +2922,7 @@ async function runCheck(){
       if (BEATS[kind].react === "must" && S.cutRound !== S.ri){ must = true; addLine("crowd", crowdText(kind), {stun: BEATS[kind].stun}); }
     }
   }
-  const allowCut = S.cutRound !== S.ri && (must || (j && j.react && grounded && (st.provoke || (kind && BEATS[kind].sev >= 3))));
+  const allowCut = st.force || S.cutRound !== S.ri && (must || (j && j.react && grounded && (st.provoke || (kind && BEATS[kind].sev >= 3))));
   const wantPress = !!(dodge && j && j.press && kind !== "refuse");
   if (allowCut || wantPress){
     // Something happens: now write it, in character.
@@ -2918,6 +2935,7 @@ async function runCheck(){
   busy = false;
   const extra = [];
   let raw = allowCut && j ? cleanSpeech(String(j.opp_line || "")) : "";
+  if (raw) raw = endAtSentence(raw).replace(/…$/, "");
   if (must && (!raw || REFUSAL.test(raw) || parseMoods(raw).text.length < 2)) raw = pick(MUST_FALLBACK[kind] || ["Excuse me?"]);
   const cut = parseMoods(raw), line = cut.text;
   const META_TALK = /\b(in character|character|the game|a game|script|prompt|AI|simulation|JSON|fourth wall)\b/i;
@@ -2940,7 +2958,7 @@ async function runCheck(){
   if (!mod && (kind === "absurd" || kind === "stunt") && r.absurd >= 2 && !follow) mod = pick([`${addressName(S.player)}, I'd ask you to take the question seriously.`, `${addressName(S.player)}, the people watching would like an answer.`]);
   const both = !!(r.curseBack && line && (PROFANE.test(line) || /\b(f+\s*you|f[*-]+\w*|screw you|go to hell|damn you|kiss my)\b/i.test(line)));
   if (r.curseBack){ r.curseBack = false; r.cursedBack = true; }
-  const ending = kind === "slur" || warn === "end";
+  const ending = kind === "slur" || kind === "withdraw" || warn === "end";
   if (line && !REFUSAL.test(line)){
     S.cutRound = S.ri;
     addLine("opp", line, {interrupt:true, moods: cut.moods});
@@ -3168,6 +3186,11 @@ async function finishElection(){
   const won = w => S.judged.filter(j => j && j.winner === w).length;
   const pr = projection(noise, won("you") >= won("opp") ? 0.1 : -0.1);
   const res = {...pr, winner: pr.evYou >= 270 ? "you" : "opp"};
+  if (S.withdrew){ // the race collapses: every battleground goes to the opponent
+    res.winner = "opp"; res.withdrew = true;
+    res.states = res.states.map(x => ({...x, margin: -(Math.abs(x.margin) + 8)}));
+    res.evOpp = 538; res.evYou = 0;
+  }
   // A 269-269 tie goes to the House, where each state delegation casts one vote. The game settles it
   // by who carried more of the battleground vote overall.
   if (pr.evYou === 269 && pr.evOpp === 269){
@@ -3491,7 +3514,7 @@ function renderResults(loading){
   box.append(el("span", "label", "Election night · November 7, 2028"));
   box.append(el("h2", "banner " + (win ? "win" : "loss"), win ? `${lastName(S.player.name)} wins the presidency` : `${S.opp.short} wins the presidency`));
   box.append(el("p", "muted", "Final margins include late deciders and turnout, so they can differ from the live tracker by a point or two."));
-  if (S.ended) box.append(el("div", "notice", `The debate ended early: the moderator called it off because ${S.ended}.`));
+  if (S.ended) box.append(el("div", "notice", S.withdrew ? `${S.ended[0].toUpperCase() + S.ended.slice(1)}, and the debate ended there. With no candidate left to vote for, the race collapsed.` : `The debate ended early: the moderator called it off because ${S.ended}.`));
   if (R.tie) box.append(el("div", "notice", `The Electoral College tied 269 to 269, so the House of Representatives decided the race. ${win ? lastName(S.player.name) : S.opp.short} carried more of the battleground vote and won the state delegations.`));
   if (R.ineligible) box.append(el("div", "notice", `${lastName(S.player.name)} is ${S.player.age}, short of the Constitution's minimum age of 35. Lawsuits challenging the result were filed before the polls closed.`));
   const evb = el("div", "box");
