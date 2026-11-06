@@ -36,8 +36,10 @@ const serverLog = [];
 let server = null, serverSettings = "";
 const base = ["-m", MODEL_PATH, "--host", "127.0.0.1", "--port", String(PORT), "-c", String(CTX), "-np", "1",
   "--reasoning-budget", "0", "--jinja", "-ctxcp", "8", "-cram", "0", "--no-webui"];
+// The memory lock the app uses is skipped on build machines (NO_MLOCK=1): a 7 GB virtual Mac shut
+// down with 3 GB of model locked in place.
 const sets = process.platform === "darwin"
-  ? [["-ngl", "all", "-fa", "on", "-lm", "mmap+mlock"], ["-ngl", "all", "-fa", "on"], ["-ngl", "all", "-fa", "auto"], ["-ngl", "0", "-fa", "auto"]]
+  ? [...(env.NO_MLOCK ? [] : [["-ngl", "all", "-fa", "on", "-lm", "mmap+mlock"]]), ["-ngl", "all", "-fa", "on"], ["-ngl", "all", "-fa", "auto"], ["-ngl", "0", "-fa", "auto"]]
   : [["-ngl", "all", "-fa", "auto"], ["-ngl", "0", "-fa", "auto"]];
 
 async function healthy(){ try { const r = await fetch(`http://127.0.0.1:${PORT}/health`); return r.ok; } catch(e){ return false; } }

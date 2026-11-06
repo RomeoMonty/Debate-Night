@@ -95,6 +95,7 @@ jobs:
           PW_DIR: ${{ runner.temp }}/pw
           OUT: ${{ runner.temp }}/lab-out
           HOURS: "5.2"
+          NO_MLOCK: "1"
         run: |
           export MODEL_PATH="$HOME/models/$MODEL_FILE"
           node scripts/cloud-lab.mjs
