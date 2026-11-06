@@ -2052,8 +2052,12 @@ function figuresOf(t){
 function knownFigures(who){
   const other = who === "you" ? "opp" : "you";
   const self = who === "you" ? S.player : S.opp;
-  const src = [gameContext(budget(0)), JSON.stringify(self), ...S.lines.filter(l => l.who === "mod" || l.who === other).map(l => l.text)].join(" \n ");
-  return new Set(figuresOf(src).map(f => f.key));
+  // The briefing without the rules: their examples ("rents fell 40% under me", "I'll build 3 million homes") aren't facts.
+  const src = [gameContext(budget(0)).split("\n\nOPPONENT RULES")[0], JSON.stringify(self), ...S.lines.filter(l => l.who === "mod" || l.who === other).map(l => l.text)].join(" \n ");
+  // Their own promises tonight too: "I'll guarantee deposits up to $500,000", then "my firewall
+  // guarantees $500,000" is the same promise said again, not a new claim of fact.
+  const promised = S.lines.filter(l => l.who === who).flatMap(l => sentencesOf(l.text).filter(x => R_PROPOSAL.test(x)));
+  return new Set([...figuresOf(src), ...promised.flatMap(figuresOf)].map(f => f.key));
 }
 function analystNotes(ri = S.ri, extra = S.notes){
   const r = S.rounds[ri];
@@ -2071,7 +2075,7 @@ function analystNotes(ri = S.ri, extra = S.notes){
     const figs = sents.filter(x => !R_PROPOSAL.test(x)).flatMap(figuresOf), unknown = figs.filter(f => !knownFigures(who).has(f.key));
     if (targets.length) bits.push(`promised ${targets.length} specific target${targets.length > 1 ? "s" : ""} (${targets.slice(0, 3).map(f => f.raw).join(", ")}; promises, not claims of fact)`);
     if (!figs.length){ if (!targets.length) bits.push(nums ? `cited ${nums} number${nums > 1 ? "s" : ""}` : "gave no specific figures"); }
-    else if (!unknown.length) bits.push(`cited ${figs.length} specific figure${figs.length > 1 ? "s" : ""}, all matching the briefing or their own platform`);
+    else if (!unknown.length) bits.push(`cited ${figs.length} specific figure${figs.length > 1 ? "s" : ""}, all matching the briefing, their platform or their own promises`);
     else bits.push(`cited ${figs.length} specific figure${figs.length > 1 ? "s" : ""}; ${unknown.length === figs.length ? (figs.length > 1 ? "none of them appear" : "it appears nowhere") : `${unknown.length} of them appear nowhere`} in the briefing, their platform or the questions, so they are unverified claims, not evidence, and may be made up (${[...new Set(unknown.map(f => f.raw))].slice(0, 4).map(x => `"${x}"`).join(", ")})`);
     if (PROFANE.test(t)) bits.push("cursed on live TV");
     if (INSULT.test(t) || PERSONAL.test(t)) bits.push("threw personal insults");
