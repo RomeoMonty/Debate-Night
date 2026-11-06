@@ -1640,7 +1640,7 @@ const NativeAI = {
 // Sized so that even a reply that fills every field to the limit still fits its token budget.
 const FIELD_LIMITS = {question:400, provoked_by:80, analysis:420, summary:240, fact_check:240, why:70, follow_up:300, headline:110, next_question:400, who:70, quote:240,
   your_party:220, other_party:220, pundit:200, recap:700, exit_poll:240, opp_line:240, moderator_line:240, their_best_point:200};
-const ARRAY_LIMITS = {attacks:[1, 3, 200], focus_group:[3, 3, 240], you:[0, 3, 120], opp:[0, 3, 120]};
+const ARRAY_LIMITS = {attacks:[1, 3, 200], you:[0, 3, 120], opp:[0, 3, 120]};
 // Qwen models sometimes slide into Chinese mid-sentence ("a coherent plan pairing military部署", "We
 // need实干，not fairy tales"), most often at the end of a long field. Every grammar leaves out
 // Chinese, Japanese and Korean characters (and full-width punctuation), so the model has to pick
@@ -1657,7 +1657,8 @@ function schemaToGBNF(schema){
   const add = body => { const name = "r" + (++n); rules.push(`${name} ::= ${body}`); return name; };
   const val = node => {
     if (node.enum) return "(" + node.enum.map(v => lit(JSON.stringify(v))).join(" | ") + ")";
-    if (node.type === "string") return `"\\"" (first char{0,${Math.max(0, (node.maxLength || 300) - 1)}})? "\\""`;
+    if (node.type === "string") return node.minLength > 0 ? `"\\"" first char{${node.minLength - 1},${Math.max(node.minLength, node.maxLength || 300) - 1}} "\\""`
+      : `"\\"" (first char{0,${Math.max(0, (node.maxLength || 300) - 1)}})? "\\""`;
     if (node.type === "boolean") return `("true" | "false")`;
     if (node.type === "integer") return `("-"? [0-9]{1,4})`;
     if (node.type === "array"){
@@ -2336,7 +2337,7 @@ Reply as JSON with: question.`});
 }
 
 const REACT_SCHEMA = {type:"object", properties:{
-  focus_group:{type:"array", items:{type:"string"}}, // one quote per cast voter, in order
+  focus_group:{type:"object", properties:{}}, // one quote per cast voter, keyed by first name (filled in per call)
   your_party:{type:"string"}, other_party:{type:"string"}, pundit:{type:"string"}
 }, required:["focus_group","your_party","other_party","pundit"]};
 
@@ -2354,7 +2355,7 @@ ${txOr(`What was said: the transcript lines marked [Segment ${idx + 1}: …] abo
 ${transcriptText(Math.max(2, b.lines - 1), idx, Math.round(b.tx * 0.8))}`)}
 
 Reply as JSON with:
-focus_group: what each of these three voters said afterwards, in this order, 1-2 sentences each in their own voice, about something specific said in this segment:
+focus_group: the exact words each of these three voters said afterwards, under their first name: 1-2 sentences in the first person ("I…"), in their own voice, about something specific said in this segment:
 ${cast.map((c, i) => `${i + 1}. ${c.who} (${BLOCS.find(x => x.id === c.bloc).name}; ${c.lean}${c.dissent ? "; disagrees with the verdict" : ""})`).join("\n")}
 your_party: one sentence, at most 25 words, on how ${youParty} reacted.
 other_party: one sentence, at most 25 words, on how ${oppParty} reacted.
@@ -3371,6 +3372,19 @@ function tidyQuote(s){
   if (!s || /[.!?\u2026"\u201d')\]]$/.test(s)) return s;
   return endAtSentence(s.replace(/[\s,;:\u2014-]*[A-Za-z'-]*-$/, "").replace(/[\s,;:\u2014-]+$/, ""));
 }
+const firstOf = c => c.who.split(",")[0].trim();
+// The focus-group schema has one field per cast voter, named for them, so each quote is that
+// person's and none can be left empty (a flat list of quotes came back with blanks, quotes in the
+// wrong slot and the other fields spilling into it).
+const reactSchema = cast => ({...REACT_SCHEMA, properties:{...REACT_SCHEMA.properties,
+  focus_group:{type:"object", properties:Object.fromEntries(cast.map(c => [firstOf(c), {type:"string", minLength:20}]))}}});
+// "Jill: I liked…" → "I liked…". A reply that just repeats who the voter is says nothing.
+function voterQuote(q, c){
+  const name = firstOf(c);
+  q = String(q || "").trim().replace(new RegExp(`^${name}\\s*[:,\\-\u2014]\\s*`, "i"), "");
+  if (q.startsWith(c.who.slice(0, 12)) || /their group (moved|didn't budge)/.test(q)) return "";
+  return tidyQuote(q);
+}
 let reacting = false;
 async function runReactions(){
   if (reacting || !S || !S.reactPending) return;
@@ -3382,12 +3396,11 @@ async function runReactions(){
   const a = {summary: jd.summary, winner: jd.winner, shifts: jd.shifts}; // after the realism checks
   const cast = jd.cast || (jd.cast = castPanel(a)); // kept if this call is bumped and retried
   try {
-    const r = await ai("json", `Voter reactions · segment ${idx + 1}`, fitPrompt(b => reactionsPrompt(a, b, idx, cast), 480), {schema: REACT_SCHEMA, maxTokens: 480, background: true});
+    const r = await ai("json", `Voter reactions · segment ${idx + 1}`, fitPrompt(b => reactionsPrompt(a, b, idx, cast), 480), {schema: reactSchema(cast), maxTokens: 480, background: true});
     if (ep !== epoch || !S) return;
     const j = S.judged[idx];
     if (j){
-      j.focus = (Array.isArray(r.focus_group) ? r.focus_group : []).slice(0, 3).map((q, i) => ({who: cast[i].who, bloc: cast[i].bloc, quote: tidyQuote(typeof q === "object" && q ? q.quote : q)}))
-        .filter(f => f.quote);
+      j.focus = cast.map(c => ({who: c.who, bloc: c.bloc, quote: voterQuote((r.focus_group || {})[firstOf(c)], c)})).filter(f => f.quote);
       j.yourParty = tidyQuote(r.your_party); j.otherParty = tidyQuote(r.other_party); j.pundit = tidyQuote(r.pundit);
       save();
       if (S.phase === "debate"){
