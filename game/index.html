@@ -2742,6 +2742,17 @@ const R_GROUP = /\b(immigrants?|migrants?|refugees?|muslims?|jews?|jewish|christ
 // didn't see is accepted when the line itself shows it is plausible (who it's aimed at, a group,
 // the moderator). That keeps the AI's catches (bigotry, a lie about the record) and drops its
 // misreads ("his plan has no price tag" isn't an attack on the moderator).
+// A line in Spanish, or a concrete plan on the question asked, is a real answer: never nonsense or
+// a stunt (small models file "Mis amigos latinos, vamos a bajar los costos…" and even a costed rent
+// plan under "absurd").
+function spanishLine(t){ const ws = String(t).toLowerCase().match(/[a-záéíóúñü]+/g) || [], es = ws.filter(w => SPANISH.has(w)); return ws.length >= 4 && new Set(es).size >= 3 && es.length / ws.length >= 0.25; }
+// (In a topic segment the promise has to be about the question; in an opening or closing, about any issue.)
+function realAnswer(t){
+  const r = S && S.rounds[S.ri]; if (spanishLine(t)) return true;
+  if (!r || !R_PROPOSAL.test(t)) return false;
+  if (r.kind === "topic") return topicHits(t, S.ri) > 0;
+  const low = " " + t.toLowerCase(); return Object.values(TOPIC_WORDS).join(" ").split(" ").some(st => st.length > 3 && low.includes(" " + st));
+}
 function kindGrounded(kind, text){
   const t = String(text || ""), low = t.toLowerCase();
   const atOpp = new RegExp(`\\b(${oppNamesSrc()}|you|your|you're|he|she|his|her|him|they|their)\\b`, "i").test(t);
@@ -2756,8 +2767,9 @@ function kindGrounded(kind, text){
     case "conspiracy": return R_CONSPIRACY.test(t) || /\b(rigged|cover[- ]?up|secret(ly)?|controls? (the|our)|they don'?t want you to know)\b/i.test(t);
     // "I agree with you that families are hurting" naturally echoes them; that's agreement, not copying.
     case "copy": { const theirs = S.lines.filter(l => l.who === "opp" && !l.live).map(l => l.text).join(" \n "); return !!theirs && !isPraise(t) && overlap(t, theirs) > 0.35; }
-    case "joke": return low.length > 15;
-    case "absurd": case "stunt": case "slur": return true;
+    case "joke": return low.length > 15 && !spanishLine(t);
+    case "absurd": case "stunt": return !realAnswer(t);
+    case "slur": return true;
     default: return false;
   }
 }
@@ -3105,7 +3117,8 @@ async function runCheck(){
   const quoted = quote.length >= 3 && lastYou && normWords(lastYou.text).includes(quote);
   const aiK = j && AI_KINDS.includes(j.kind) ? j.kind : null;
   // Copying is a matter of overlap with what they said, so quoting the player's line doesn't prove it.
-  const grounded = aiK === "copy" ? !!(lastYou && kindGrounded("copy", lastYou.text))
+  // Same for nonsense and stunts: what decides is what the line is, not which words the AI quoted.
+  const grounded = aiK === "copy" || aiK === "absurd" || aiK === "stunt" ? !!(lastYou && kindGrounded(aiK, lastYou.text))
     : !!(quoted || (aiK && lastYou && kindGrounded(aiK, lastYou.text)) || (kind && st.kind === kind && lastYou));
   // What the AI noticed that word lists can't: a slur, bigotry, a lie about the record, nonsense.
   let must = !!st.must;
@@ -3115,7 +3128,7 @@ async function runCheck(){
     addLine("crowd", crowdText("joke"));
     r.pending = {kind:"joke", ri: S.ri, at: S.lines.indexOf(lastYou)};
   }
-  if (aiKind && aiKind !== kind && kind !== "joke" && (!kind || BEATS[aiKind].sev > BEATS[kind].sev) && (grounded || BEATS[aiKind].absurd || aiKind === "slur")){
+  if (aiKind && aiKind !== kind && kind !== "joke" && (!kind || BEATS[aiKind].sev > BEATS[kind].sev) && (grounded || aiKind === "slur")){
     let ok = true;
     if (aiKind === "slur"){ ok = !!lastYou && await confirmSlur(lastYou.text); if (ep !== epoch) return; }
     if (aiKind === "bigotry" && !grounded) ok = false;
@@ -4496,13 +4509,13 @@ const Lab = {
         const j = t.r || {};
         const aiK = AI_KINDS.includes(j.kind) && BEATS[j.kind] ? j.kind : null;
         const quoted = normWords(j.provoked_by).length >= 3 && normWords(line).includes(normWords(j.provoked_by));
-        const grounded = aiK === "copy" ? kindGrounded("copy", line) : quoted || (aiK && kindGrounded(aiK, line));
+        const grounded = aiK === "copy" || aiK === "absurd" || aiK === "stunt" ? kindGrounded(aiK, line) : quoted || (aiK && kindGrounded(aiK, line));
         // The game only laughs at a joke about the race, the opponent or the subject (as jokeLands does).
         const jokeOk = aiK !== "joke" || new RegExp(`\\b(${oppNamesSrc()}|you|your|washington|congress|president|white house|voters|election|campaign|debate)\\b`, "i").test(line) || topicHits(line, S.ri) > 0;
         // What the game ends up with: the words' verdict, unless the AI saw something more serious that
         // the line backs up (and that the game takes from the AI at all).
         const TAKE = /^(slur|bigotry|family|threat|crime|crude|lie_record|conspiracy|absurd|stunt|copy|attack_mod|joke)$/;
-        const aiUsed = aiK && aiK !== code && code !== "joke" && TAKE.test(aiK) && jokeOk && (grounded || (BEATS[aiK] || {}).absurd) && (!code || BEATS[aiK].sev > BEATS[code].sev);
+        const aiUsed = aiK && aiK !== code && code !== "joke" && TAKE.test(aiK) && jokeOk && grounded && (!code || BEATS[aiK].sev > BEATS[code].sev);
         const game = aiUsed ? aiK : code || "none";
         const kindAlias = k => k === "curse_at" || k === "curse_strong" || k === "curse_mild" ? "curse" : k;
         const ok = want.includes(kindAlias(game));
