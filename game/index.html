@@ -564,6 +564,68 @@ const SWING = [
  {id:"AZ", name:"Arizona", ev:11, w:{suburban:.28, latino:.30, young:.12, seniors:.22, rural:.08}},
  {id:"NV", name:"Nevada", ev:6, w:{suburban:.18, working:.20, latino:.32, young:.15, seniors:.15}}
 ];
+// Focus-group voters. The game casts them and the AI only writes what they say: asked to invent
+// people, a small model brings back the same "Marcus, 42, truck driver" every segment, and told who
+// already spoke it copies those names instead (lab runs 17-20).
+const VOTER_CAST = {
+  towns: {
+    PA: ["Scranton", "Erie", "Allentown", "Bethlehem", "Harrisburg", "Lancaster", "Reading", "Wilkes-Barre", "York", "Pittsburgh", "Levittown", "Media"],
+    MI: ["Saginaw", "Flint", "Grand Rapids", "Kalamazoo", "Lansing", "Warren", "Dearborn", "Bay City", "Livonia", "Sterling Heights", "Monroe", "Novi"],
+    WI: ["Green Bay", "Kenosha", "Waukesha", "Eau Claire", "Oshkosh", "Janesville", "Racine", "Milwaukee", "Appleton", "La Crosse", "Brookfield", "Sheboygan"],
+    GA: ["Macon", "Savannah", "Augusta", "Columbus", "Marietta", "Athens", "Alpharetta", "Lawrenceville", "Duluth", "Peachtree City", "Albany", "Rome"],
+    NC: ["Charlotte", "Raleigh", "Greensboro", "Fayetteville", "Wilmington", "Durham", "Cary", "Hickory", "Gastonia", "Concord", "Winston-Salem", "High Point"],
+    AZ: ["Phoenix", "Tucson", "Mesa", "Chandler", "Yuma", "Glendale", "Tempe", "Gilbert", "Peoria", "Surprise", "Goodyear", "Avondale"],
+    NV: ["Las Vegas", "Henderson", "Reno", "North Las Vegas", "Sparks", "Carson City"]
+  },
+  smallTowns: {
+    PA: ["Altoona", "Johnstown", "Chambersburg", "Bloomsburg", "Meadville"], MI: ["Traverse City", "Alpena", "Cadillac", "Owosso", "Hillsdale"],
+    WI: ["Wausau", "Rhinelander", "Baraboo", "Marshfield", "Rice Lake"], GA: ["Valdosta", "Dalton", "Tifton", "Moultrie", "Waycross"],
+    NC: ["Boone", "Rocky Mount", "Lumberton", "Wilkesboro", "Sanford"], AZ: ["Prescott", "Kingman", "Show Low", "Sierra Vista", "Payson"],
+    NV: ["Elko", "Pahrump", "Fallon", "Winnemucca"]
+  },
+  names: {
+    any: ["Denise", "Tyrone", "Megan", "Kevin", "Brittany", "Darnell", "Heather", "Lakisha", "Tom", "Kristen", "Andre", "Amy", "Raj", "Linh", "Greg", "Tasha",
+      "Wes", "Courtney", "Doug", "Imani", "Joanne", "Priya", "Malik", "Erin", "Yolanda", "Brandon", "Shannon", "DeShawn", "Ray", "Mei", "Travis", "Aisha",
+      "Luke", "Nicole", "Omar", "Stacy", "Curtis", "Hannah", "Vince", "Keisha", "Jill", "Terrence", "Paula", "Ahmed", "Becky", "Marcus", "Tina", "Scott"],
+    latino: ["Maribel", "Luis", "Rosa", "Hector", "Gabriela", "Javier", "Yesenia", "Rafael", "Lupe", "Arturo", "Daniela", "Esteban", "Marisol", "Ruben", "Alejandra", "Fernando", "Lorena", "Victor"],
+    young: ["Kayla", "Tyler", "Zoe", "Jalen", "Madison", "Ethan", "Destiny", "Noah", "Sofia", "Aiden", "Jasmine", "Caleb", "Riley", "Mateo", "Nia", "Owen"],
+    seniors: ["Carol", "Dennis", "Barbara", "Walt", "Shirley", "Earl", "Bev", "Ron", "Gloria", "Frank", "Marlene", "Harold", "Dolores", "Gene", "Loretta", "Bill"]
+  },
+  jobs: {
+    suburban: ["ICU nurse", "dental hygienist", "insurance agent", "middle-school teacher", "accountant", "project manager", "physical therapist", "real estate agent", "HR manager", "pharmacist", "stay-at-home dad", "IT manager"],
+    working: ["electrician", "warehouse picker", "line cook", "auto plant worker", "pipefitter", "long-haul trucker", "hotel housekeeper", "home health aide", "welder", "city bus driver", "grocery cashier", "union carpenter"],
+    latino: ["taqueria owner", "landscaping business owner", "nurse", "auto shop owner", "bank teller", "construction foreman", "cleaning-company owner", "insurance broker", "casino dealer", "bakery owner"],
+    young: ["barista", "grad student", "junior software developer", "delivery driver", "retail shift lead", "paralegal", "community college student", "nursing student", "freelance video editor", "bartender"],
+    seniors: ["retired teacher", "retired machinist", "retired nurse", "retired mail carrier", "widowed bookkeeper", "retired pastor", "retired state trooper", "retired factory supervisor", "retired school secretary"],
+    rural: ["dairy farmer", "corn and soybean farmer", "feed-store owner", "county road worker", "cattle rancher", "small-engine mechanic", "power lineman", "hardware store owner", "logger", "school bus driver"]
+  },
+  ages: {suburban:[31, 52], working:[24, 61], latino:[27, 63], young:[19, 29], seniors:[66, 85], rural:[29, 72]}
+};
+// Three voters for one segment's focus group: two from the blocs that moved most toward the
+// segment's winner, one from a bloc that went the other way (or stayed put).
+function castPanel(a){
+  const used = new Set(S.judged.flatMap(j => (j && j.focus) || []).map(f => String(f.who).split(",")[0].trim()));
+  const ds = BLOCS.map(b => ({b, d: Number(a.shifts?.[b.id]?.d) || 0}));
+  const sign = a.winner === "you" ? 1 : a.winner === "opp" ? -1 : 0;
+  const withW = ds.filter(x => sign && x.d * sign > 0).sort((x, y) => Math.abs(y.d) - Math.abs(x.d));
+  const against = ds.filter(x => !sign || x.d * sign <= 0).sort((x, y) => (sign ? x.d * sign - y.d * sign : Math.abs(y.d) - Math.abs(x.d)) || Math.random() - .5);
+  const order = [...withW.slice(0, 2), ...against].concat(ds.sort(() => Math.random() - .5));
+  const blocs = []; for (const x of order) if (!blocs.includes(x.b) && blocs.length < 3) blocs.push(x.b);
+  // The dissenter, when there is one, is the third.
+  const P = lastName(S.player.name), O = S.opp.short;
+  return blocs.map((b, i) => {
+    const states = SWING.filter(s => s.w[b.id]); let r = Math.random() * states.reduce((t, s) => t + s.w[b.id], 0);
+    const st = states.find(s => (r -= s.w[b.id]) < 0) || states[0];
+    const pool = VOTER_CAST.names[b.id] || VOTER_CAST.names.any, fresh = pool.filter(n => !used.has(n));
+    const name = pick(fresh.length ? fresh : pool); used.add(name);
+    const [lo, hi] = VOTER_CAST.ages[b.id] || [25, 70];
+    const town = pick((b.id === "rural" ? VOTER_CAST.smallTowns : VOTER_CAST.towns)[st.id]);
+    const d = ds.find(x => x.b === b).d;
+    const lean = d > 0 ? `their group moved toward ${P}` : d < 0 ? `their group moved toward ${O}` : "their group didn't budge";
+    return {who: `${name}, ${lo + Math.floor(Math.random() * (hi - lo + 1))}, ${pick(VOTER_CAST.jobs[b.id])}, ${town}, ${st.id}`, bloc: b.id, lean,
+      dissent: i === 2 && sign !== 0};
+  });
+}
 const BASE_EV = {you:222, opp:223}; // everything outside the 7 battlegrounds (93 EVs)
 // bloc lean (pts) → state margin (pts). Big enough that the debate decides a race: a candidate who
 // loses most segments loses the battlegrounds, rather than the starting map and election-night luck.
@@ -1578,7 +1640,7 @@ const NativeAI = {
 // Sized so that even a reply that fills every field to the limit still fits its token budget.
 const FIELD_LIMITS = {question:400, provoked_by:80, analysis:420, summary:240, fact_check:240, why:70, follow_up:300, headline:110, next_question:400, who:70, quote:240,
   your_party:220, other_party:220, pundit:200, recap:700, exit_poll:240, opp_line:240, moderator_line:240, their_best_point:200};
-const ARRAY_LIMITS = {attacks:[1, 3, 200], focus_group:[3, 3, 0], you:[0, 3, 120], opp:[0, 3, 120]};
+const ARRAY_LIMITS = {attacks:[1, 3, 200], focus_group:[3, 3, 240], you:[0, 3, 120], opp:[0, 3, 120]};
 // Qwen models sometimes slide into Chinese mid-sentence ("a coherent plan pairing military部署", "We
 // need实干，not fairy tales"), most often at the end of a long field. Every grammar leaves out
 // Chinese, Japanese and Korean characters (and full-width punctuation), so the model has to pick
@@ -2274,19 +2336,17 @@ Reply as JSON with: question.`});
 }
 
 const REACT_SCHEMA = {type:"object", properties:{
-  focus_group:{type:"array", items:{type:"object", properties:{who:{type:"string"}, bloc:{type:"string", enum:BLOCS.map(b => b.id)}, quote:{type:"string"}}, required:["who","bloc","quote"]}},
+  focus_group:{type:"array", items:{type:"string"}}, // one quote per cast voter, in order
   your_party:{type:"string"}, other_party:{type:"string"}, pundit:{type:"string"}
 }, required:["focus_group","your_party","other_party","pundit"]};
 
-function reactionsPrompt(a, b, idx){
+function reactionsPrompt(a, b, idx, cast){
   const p = S.player, o = S.opp, r = S.rounds[idx], P = lastName(p.name);
   const youParty = /independent/i.test(p.party) ? `the independent coalition backing ${P}` : `${p.party} Party leaders and base voters`;
   const oppParty = /independent/i.test(o.party) ? `the independent coalition backing ${o.short}` : `${o.party} Party leaders and base voters`;
   const moves = BLOCS.map(x => ({x, d: Number(a.shifts?.[x.id]?.d) || 0})).filter(m => m.d).sort((m, n) => Math.abs(n.d) - Math.abs(m.d)).slice(0, 3)
     .map(m => `${m.x.name} ${m.d > 0 ? "toward " + P : "toward " + o.short} (${m.d > 0 ? "+" : ""}${m.d})`).join("; ") || "little movement";
   const winner = a.winner === "you" ? P : a.winner === "opp" ? o.short : "nobody";
-  // Earlier focus groups, so the same "Marcus, 42, truck driver" doesn't come back every segment.
-  const heard = S.judged.slice(0, idx).flatMap(j => (j && j.focus) || []).map(f => `${String(f.who).split(",")[0]} (${clip(f.quote, 60)})`).slice(-9);
   return withHistory({system: gameContext(b), user: `TASK: Voice real people's reactions to one segment of the debate. People react honestly and nobody lectures.
 Segment: "${r.label}". Verdict: ${clip(String(a.summary || ""), 220)} Won by: ${winner}.
 Voter movement: ${moves}.
@@ -2294,8 +2354,8 @@ ${txOr(`What was said: the transcript lines marked [Segment ${idx + 1}: …] abo
 ${transcriptText(Math.max(2, b.lines - 1), idx, Math.round(b.tx * 0.8))}`)}
 
 Reply as JSON with:
-focus_group: exactly 3 voters, each with who ("first name, age, job, town, state abbreviation", the town really in that state; battleground states: ${SWING.map(s => s.name).join(", ")}), bloc (a bloc id) and quote (1-2 sentences in their own voice, about something specific said in this segment). Include one who disagrees with the verdict.${heard.length ? `
-These voters already spoke tonight, so pick three new people (new first names, new jobs) with new words: ${heard.join("; ")}.` : ""}
+focus_group: what each of these three voters said afterwards, in this order, 1-2 sentences each in their own voice, about something specific said in this segment:
+${cast.map((c, i) => `${i + 1}. ${c.who} (${BLOCS.find(x => x.id === c.bloc).name}; ${c.lean}${c.dissent ? "; disagrees with the verdict" : ""})`).join("\n")}
 your_party: one sentence, at most 25 words, on how ${youParty} reacted.
 other_party: one sentence, at most 25 words, on how ${oppParty} reacted.
 pundit: one sharp line, at most 25 words, from a cable-news analyst.`});
@@ -3320,12 +3380,14 @@ async function runReactions(){
   if (!S.judged[idx]){ reacting = false; return; }
   const jd = S.judged[idx] || {};
   const a = {summary: jd.summary, winner: jd.winner, shifts: jd.shifts}; // after the realism checks
+  const cast = jd.cast || (jd.cast = castPanel(a)); // kept if this call is bumped and retried
   try {
-    const r = await ai("json", `Voter reactions · segment ${idx + 1}`, fitPrompt(b => reactionsPrompt(a, b, idx), 480), {schema: REACT_SCHEMA, maxTokens: 480, background: true});
+    const r = await ai("json", `Voter reactions · segment ${idx + 1}`, fitPrompt(b => reactionsPrompt(a, b, idx, cast), 480), {schema: REACT_SCHEMA, maxTokens: 480, background: true});
     if (ep !== epoch || !S) return;
     const j = S.judged[idx];
     if (j){
-      j.focus = Array.isArray(r.focus_group) ? r.focus_group.slice(0, 3).map(f => ({who:String(f.who || "Voter"), bloc:String(f.bloc || ""), quote:tidyQuote(f.quote)})) : [];
+      j.focus = (Array.isArray(r.focus_group) ? r.focus_group : []).slice(0, 3).map((q, i) => ({who: cast[i].who, bloc: cast[i].bloc, quote: tidyQuote(typeof q === "object" && q ? q.quote : q)}))
+        .filter(f => f.quote);
       j.yourParty = tidyQuote(r.your_party); j.otherParty = tidyQuote(r.other_party); j.pundit = tidyQuote(r.pundit);
       save();
       if (S.phase === "debate"){
