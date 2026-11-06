@@ -17,12 +17,15 @@ const MODE = env.MODE || "lab";
 const PERSONAS = (env.PERSONAS || "quick").split(",").map(s => s.trim()).filter(Boolean);
 const MODEL_ID = env.MODEL_ID || "standard";
 const MODEL_PATH = env.MODEL_PATH;
-const SERVER_BIN = env.SERVER_BIN || path.join(root, "resources", "llama-arm64", "llama-server");
+const SERVER_BIN = env.SERVER_BIN || path.join(root, "resources", process.platform === "darwin" ? "llama-arm64" : "llama-x64", "llama-server");
+// Several build machines can share one run: SHARD/SHARDS splits the debates between them, and TAG
+// keeps each machine's files apart (e.g. "lab", "d2of6").
+const SHARD = Number(env.SHARD || 0), SHARDS = Math.max(1, Number(env.SHARDS || 1));
 const OUT = path.resolve(env.OUT || "lab-out");
 const CTX = Number(env.CTX || 12288);
 const PORT = Number(env.PORT || 18600);
 const HOURS = Number(env.HOURS || 5.5);
-const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-");
+const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-") + (env.TAG ? "-" + env.TAG : "");
 fs.mkdirSync(OUT, { recursive: true });
 
 const req = createRequire(env.PW_DIR ? path.join(path.resolve(env.PW_DIR), "x.js") : import.meta.url);
@@ -44,7 +47,12 @@ function publish(){
     run("git add -A");
     try { run("git diff --cached --quiet"); return; } catch(e){}
     run(`git -c user.name="AI lab" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -q -m "Lab ${env.PUBLISH_DIR}: progress"`);
-    run("git push -q origin HEAD:lab-reports");
+    // Other machines in the same run push too; each writes its own files, so a rebase never clashes.
+    for (let i = 0; i < 8; i++){
+      try { run("git push -q origin HEAD:lab-reports"); return; }
+      catch(e){ try { run("git pull -q --rebase origin lab-reports"); } catch(x){} execSync(`sleep ${1 + Math.floor(Math.random() * 4)}`); }
+    }
+    throw new Error("push kept failing");
   } catch(e){ console.log("(couldn't publish progress yet)"); }
 }
 function progressFile(){ fs.writeFileSync(path.join(OUT, `${stamp}-run.md`), `# Cloud lab run (in progress)\n\n${machine()}\n\n## Steps\n\n${notes.map(n => "    " + n).join("\n")}\n`); fs.writeFileSync(path.join(OUT, `${stamp}-engine.log`), serverLog.slice(-3000).join("\n")); }
@@ -68,7 +76,7 @@ async function startServer(){
   for (const extra of sets){
     note(`Starting the engine: ${extra.join(" ")}`);
     const proc = spawn(SERVER_BIN, [...base, ...extra], { cwd: path.dirname(SERVER_BIN), stdio: ["ignore", "pipe", "pipe"],
-      env: { ...env, GGML_METAL_RESIDENCY_KEEP_ALIVE_S: "3600" } });
+      env: { ...env, GGML_METAL_RESIDENCY_KEEP_ALIVE_S: "3600", LD_LIBRARY_PATH: [path.dirname(SERVER_BIN), env.LD_LIBRARY_PATH].filter(Boolean).join(":") } });
     let exited = false;
     proc.on("exit", c => { exited = true; serverLog.push(`[engine exited with ${c}]`); });
     for (const s of [proc.stdout, proc.stderr]) s.on("data", d => { for (const l of String(d).split("\n")) if (l.trim()) { serverLog.push(l); if (serverLog.length > 20000) serverLog.splice(0, 5000); } });
@@ -143,6 +151,7 @@ async function main(){
   progressFile(); publish();
   const deadline = Date.now() + HOURS * 3600e3;
   const saved = [];
+  let emptyShard = false;
 
   if (MODE === "lab" || MODE === "both"){
     note("Running the AI lab…");
@@ -156,12 +165,13 @@ async function main(){
   }
   if (MODE === "debates" || MODE === "both"){
     note(`Running test debates: ${PERSONAS.join(", ")}…`);
-    const ids = await page.evaluate(list => {
-      const expand = id => { const p = TEST_PERSONAS[id]; return p && p.ids ? p.ids : [id]; };
-      const all = list.flatMap(expand).filter(id => TEST_PERSONAS[id]);
-      TestRun.begin(all); return all;
-    }, PERSONAS);
-    note(`${ids.length} debate(s): ${ids.join(", ")}`);
+    const ids = await page.evaluate(([list, shard, shards]) => {
+      const expand = id => { const p = TEST_SETS[id]; return p && p.ids ? p.ids : [id]; };
+      const all = list.flatMap(expand).filter(id => TEST_PERSONAS[id]).filter((id, i) => i % shards === shard);
+      if (all.length) TestRun.begin(all); return all;
+    }, [PERSONAS, SHARD, SHARDS]);
+    note(`${ids.length} debate(s)${SHARDS > 1 ? ` (machine ${SHARD + 1} of ${SHARDS})` : ""}: ${ids.join(", ")}`);
+    if (!ids.length) emptyShard = true;
     let last = -1;
     while (Date.now() < deadline){
       const st = await page.evaluate(() => ({ active: !!TestRun.active, done: TestRun.reports.length }));
@@ -174,7 +184,8 @@ async function main(){
       if (!st.active && st.done >= ids.length) break;
       await new Promise(r => setTimeout(r, 5000));
     }
-    if (await page.evaluate(() => TestRun.reports.length)){
+    if (emptyShard){}
+    else if (await page.evaluate(() => TestRun.reports.length)){
       const dl = page.waitForEvent("download", { timeout: 120e3 });
       await page.evaluate(() => TestRun.download());
       const d = await dl; const f = path.join(OUT, `${stamp}-debates.md`); await d.saveAs(f); saved.push(f);
@@ -187,7 +198,7 @@ async function main(){
   fs.writeFileSync(path.join(OUT, `${stamp}-engine.log`), serverLog.slice(-3000).join("\n"));
   publish();
   await browser.close();
-  return saved;
+  return emptyShard && !saved.length ? ["(no debates for this machine)"] : saved;
 }
 
 main().then(saved => { console.log("Saved:", saved.join(", ") || "(nothing)"); if (server) server.kill(); process.exit(saved.length ? 0 : 1); })

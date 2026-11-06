@@ -2,6 +2,8 @@
 # the same engine and model the app uses, with no window. It runs the AI lab and/or test debates and
 # saves the reports to the "lab-reports" branch (runs/<number>-<mode>/), so they can be read and
 # acted on without anyone's own computer. Start it from the Actions tab ("Run workflow").
+# The lab and the debates run on separate machines at the same time; the debates are split across
+# several machines too, so a run of six players takes about as long as one debate.
 name: AI lab (real model)
 run-name: "AI lab: ${{ inputs.mode }}${{ inputs.note && format(' · {0}', inputs.note) || '' }}"
 
@@ -24,6 +26,14 @@ on:
       note:
         description: "What this run is checking (shows in the report)"
         default: ""
+      machine:
+        description: "Build machine: linux (4-core processor, many at once) or mac (a virtual M1 whose graphics chip the AI can't use, so it's slower)"
+        type: choice
+        options: [linux, mac]
+        default: linux
+      machines:
+        description: "How many machines share the debates (each takes every Nth player)"
+        default: "6"
 
 permissions:
   contents: write
@@ -36,8 +46,28 @@ env:
   LLAMA_TAG: b11600
 
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      parts: ${{ steps.p.outputs.parts }}
+    steps:
+      - id: p
+        env: { MODE: "${{ inputs.mode }}", N: "${{ inputs.machines }}" }
+        run: |
+          n=$(( ${N:-1} < 1 ? 1 : ${N:-1} )); n=$(( n > 18 ? 18 : n ))
+          parts=()
+          [ "$MODE" != debates ] && parts+=('{"part":"lab","tag":"lab","shard":0,"shards":1}')
+          if [ "$MODE" != lab ]; then for i in $(seq 0 $((n-1))); do parts+=("{\"part\":\"debates\",\"tag\":\"d$((i+1))of$n\",\"shard\":$i,\"shards\":$n}"); done; fi
+          echo "parts=[$(IFS=,; echo "${parts[*]}")]" >> "$GITHUB_OUTPUT"; cat "$GITHUB_OUTPUT"
+
   lab:
-    runs-on: macos-15
+    needs: plan
+    name: ${{ matrix.tag }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.parts) }}
+    runs-on: ${{ inputs.machine == 'mac' && 'macos-15' || 'ubuntu-latest' }}
     timeout-minutes: 355
     steps:
       - uses: actions/checkout@v6
@@ -46,7 +76,7 @@ jobs:
 
       - name: Fetch the AI engine
         env: { GH_TOKEN: "${{ github.token }}" }
-        run: node scripts/fetch-llama.mjs mac-arm64
+        run: node scripts/fetch-llama.mjs ${{ runner.os == 'macOS' && 'mac-arm64' || 'linux-x64' }}
 
       - name: Find the model file
         id: model
@@ -64,7 +94,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/models
-          key: model-${{ steps.model.outputs.file }}
+          key: model-${{ runner.os }}-${{ steps.model.outputs.file }}
 
       - name: Download the model (first run only)
         run: |
@@ -78,16 +108,19 @@ jobs:
           mkdir -p "$RUNNER_TEMP/pw" && cd "$RUNNER_TEMP/pw"
           npm init -y > /dev/null
           npm i --no-audit --no-fund playwright@1.55.0
-          npx playwright install chromium
+          npx playwright install ${{ runner.os == 'Linux' && '--with-deps' || '' }} chromium
 
       - name: About this machine
         run: |
-          sysctl -n machdep.cpu.brand_string; sysctl -n hw.ncpu; echo "$(( $(sysctl -n hw.memsize) / 1073741824 )) GB"
-          system_profiler SPDisplaysDataType | sed -n 1,15p
+          if [ "$RUNNER_OS" = macOS ]; then sysctl -n machdep.cpu.brand_string; sysctl -n hw.ncpu; echo "$(( $(sysctl -n hw.memsize) / 1073741824 )) GB"
+          else lscpu | sed -n '1,20p'; free -g; fi
 
       - name: Run the game against the AI
         env:
-          MODE: ${{ inputs.mode }}
+          MODE: ${{ matrix.part }}
+          TAG: ${{ matrix.tag }}
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ matrix.shards }}
           PERSONAS: ${{ inputs.personas }}
           MODEL_ID: ${{ inputs.model }}
           MODEL_FILE: ${{ steps.model.outputs.file }}
@@ -110,22 +143,26 @@ jobs:
           RUN_PERSONAS: ${{ inputs.personas }}
           RUN_MODEL: ${{ inputs.model }}
           RUN_NOTE: ${{ inputs.note }}
+          RUN_MACHINE: ${{ inputs.machine }}
         run: |
           out="$RUNNER_TEMP/lab-out"; [ -d "$out" ] || { echo "No reports."; exit 0; }
           dest="runs/${{ github.run_number }}-$RUN_MODE"
-          cd "$RUNNER_TEMP"
+          cd "$RUNNER_TEMP"; rm -rf rep
           url="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-          if git clone --depth 1 --branch lab-reports "$url" rep 2>/dev/null; then cd rep
+          if git clone -q --depth 1 --branch lab-reports "$url" rep 2>/dev/null; then cd rep
           else mkdir rep && cd rep && git init -q -b lab-reports && git remote add origin "$url"
             printf '# AI lab reports\n\nWritten by the "AI lab (real model)" workflow. Each folder under runs/ is one run.\n' > README.md; fi
           mkdir -p "$dest" && cp "$out"/* "$dest"/
-          printf '%s\n' "commit: ${GITHUB_SHA}" "mode: $RUN_MODE" "personas: $RUN_PERSONAS" "model: $RUN_MODEL" "note: $RUN_NOTE" > "$dest/about.txt"
+          printf '%s\n' "commit: ${GITHUB_SHA}" "mode: $RUN_MODE" "personas: $RUN_PERSONAS" "model: $RUN_MODEL" "machine: $RUN_MACHINE" "note: $RUN_NOTE" > "$dest/about.txt"
           git add -A
           git diff --cached --quiet && { echo "Already saved."; exit 0; }
-          git -c user.name="AI lab" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -q -m "Lab run ${{ github.run_number }}: $RUN_MODE at ${GITHUB_SHA::7}"
-          git push -q origin HEAD:lab-reports
-          echo "Saved to lab-reports/$dest"
+          git -c user.name="AI lab" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -q -m "Lab run ${{ github.run_number }} (${{ matrix.tag }}) at ${GITHUB_SHA::7}"
+          for i in 1 2 3 4 5 6 7 8; do
+            git push -q origin HEAD:lab-reports && { echo "Saved to lab-reports/$dest"; exit 0; }
+            git pull -q --rebase -X theirs origin lab-reports || true; sleep $((RANDOM % 5 + 1))
+          done
+          exit 1
 
       - uses: actions/upload-artifact@v7
         if: always()
-        with: { name: lab-reports, path: "${{ runner.temp }}/lab-out", if-no-files-found: ignore }
+        with: { name: "lab-reports-${{ matrix.tag }}", path: "${{ runner.temp }}/lab-out", if-no-files-found: ignore }
