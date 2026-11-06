@@ -996,7 +996,7 @@ const CURSE_SRC = "f+u+c+k\\w*|motherf\\w*|(?:bull|horse|dip|ape|chicken)?sh[i1]
 const PROFANE_WORD = new RegExp("^(" + CURSE_SRC + ")$", "i");
 const PROFANE = new RegExp("(?:^|[^\\w*])(" + CURSE_SRC + ")(?![\\w*])", "i");
 // Personal insults: name-calling, mocking someone's age or looks, going after their family.
-const INSULT_SRC = "idiot|moron|imbecile|stupid|dumb|clown|bozo|loser|coward|pathetic|disgrace|incompetent|puppet|hypocrite|traitor|ugly|senile|creep|scum|sleaze\\w*|snake|pig|horse-?face\\w*|dog-?faced|donkey|liar|crook|sellout|shill";
+const INSULT_SRC = "idiot|moron|imbecile|stupid|dumb|clown|bozo|loser|coward|pathetic|disgrace|incompetent|puppet|hypocrite|traitor|ugly|senile|creep|scum|sleaze\\w*|snake|pig|horse-?face\\w*|dog-?faced|donkey|liar|crook|sellout|shill|dinosaur|fossil|has-?been|clueless|buffoon|nitwit|dimwit|halfwit|dunce|blowhard|windbag|weasel|crybaby|airhead";
 const INSULT = new RegExp("\\b(" + INSULT_SRC + ")\\b", "i");
 const PERSONAL = /\byour (wife|husband|kids?|children|son|daughter|mother|mom|father|dad|family|spouse|face|looks|hair)\b|\byou(?:'re| are)\s+(?:a |an |so |too |just |nothing but |such a )*(old|slow|weak|senile|stupid|dumb|ugly|fat|pathetic|useless|crazy|insane|liar|joke|failure|loser|coward|clown|puppet|fraud|disgrace)\b|nobody (likes|trusts|wants) you|\bshut (up|your)\b|\b(screw|f\*?u?c?k) you\b|go to hell|eat my/i;
 const TRIGGERS = [
@@ -1914,6 +1914,7 @@ function judgeRules(){
 Be realistic and strictly even-handed: no party or ideology is favored, and each bloc judges by its own values.
 Helps a candidate: answering the actual question, concrete believable plans, consistency, command of facts, empathy, composure, sharp rebuttals.
 Hurts a candidate: dodging, vagueness, false or impossible claims, silly answers (voters mock them), contradictions, running over time, attacks that backfire.
+A number in a promise ("I'll build 3 million homes") is a target, not a claim of fact: judge whether it's believable and paid for, not whether the briefing mentions it. A number stated as fact about the past or the present ("rents fell 40% under me") is what fact-checkers check.
 Profanity, insults and outrageous statements get the reactions real people would have: some voters cheer a brawler, others recoil, depending on the bloc and the delivery.
 Anchors: a concrete, costed plan that answers the question moves the blocs it targets 2-3 toward that candidate; a joke or a non-answer moves most blocs 2-4 toward the other candidate; cursing or a personal insult on stage moves most blocs 3-5 away from whoever did it (a few may shrug, 0-1); a candidate who just repeats an earlier answer gains nothing.
 Fields: analysis (2 short sentences, written first: did each candidate answer, what was concrete or empty, true or false, which blocs care; everything after must follow from it), summary (one sentence: who won the exchange and why), winner ("${P}", "${O}" or "draw"), fact_check (any false, misleading or impossible claim, naming who said it; "" if none), shifts (for every bloc: why = at most 5 words on what it reacted to; toward = "${P}", "${O}" or "neither"; by = 0-6, where 0 means nothing mattered to them, 1-2 slight, 3-4 solid, 5-6 only a defining moment or disaster), headline (news headline, at most 12 words), new_claims (short concrete promises or claims each candidate made this segment).`;
@@ -2003,6 +2004,8 @@ const META = /\b(ignore (all |any |the |your )?(previous|prior|above|earlier|tho
 // "4 million" and "four million" match. Plain small counts ("three states") aren't figures.
 const NUMW = {one:1, two:2, three:3, four:4, five:5, six:6, seven:7, eight:8, nine:9, ten:10, eleven:11, twelve:12, fifteen:15, twenty:20, thirty:30, forty:40, fifty:50, sixty:60, seventy:70, eighty:80, ninety:90, hundred:100};
 const SCALE = {thousand:1e3, million:1e6, billion:1e9, trillion:1e12};
+// Sentences that promise or propose ("I'll cap rent at 3%"): their numbers are targets, not facts.
+const R_PROPOSAL = /\b(i'?ll|i will|we'?ll|we will|i would|we would|i'?d|we'?d|my plan|our plan|i propose|proposing|going to|plan to|i want to|we want to|i'm calling for|let'?s)\b/i;
 function figuresOf(t){
   const out = [], re = /(\$\s?)?\b(\d[\d,]*(?:\.\d+)?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred)\b(?:\s*(%|percent\b|thousand\b|million\b|billion\b|trillion\b))?/gi;
   let m;
@@ -2037,8 +2040,10 @@ function analystNotes(ri = S.ri, extra = S.notes){
     const nums = (t.match(/\$?\d[\d,.]*(\s*(%|percent|million|billion|trillion))?/g) || []).length;
     const bits = [];
     if (r.kind === "topic"){ const h = topicHits(t, ri); if (h >= 2) bits.push("talked about the subject of the question"); else if (!h) bits.push("never touched the subject of the question"); }
-    const figs = figuresOf(t), unknown = figs.filter(f => !knownFigures(who).has(f.key));
-    if (!figs.length) bits.push(nums ? `cited ${nums} number${nums > 1 ? "s" : ""}` : "gave no specific figures");
+    const sents = sentencesOf(t), targets = sents.filter(x => R_PROPOSAL.test(x)).flatMap(figuresOf);
+    const figs = sents.filter(x => !R_PROPOSAL.test(x)).flatMap(figuresOf), unknown = figs.filter(f => !knownFigures(who).has(f.key));
+    if (targets.length) bits.push(`promised ${targets.length} specific target${targets.length > 1 ? "s" : ""} (${targets.slice(0, 3).map(f => f.raw).join(", ")}; promises, not claims of fact)`);
+    if (!figs.length){ if (!targets.length) bits.push(nums ? `cited ${nums} number${nums > 1 ? "s" : ""}` : "gave no specific figures"); }
     else if (!unknown.length) bits.push(`cited ${figs.length} specific figure${figs.length > 1 ? "s" : ""}, all matching the briefing or their own platform`);
     else bits.push(`cited ${figs.length} specific figure${figs.length > 1 ? "s" : ""}; ${unknown.length === figs.length ? (figs.length > 1 ? "none of them appear" : "it appears nowhere") : `${unknown.length} of them appear nowhere`} in the briefing, their platform or the questions, so they are unverified claims, not evidence, and may be made up (${[...new Set(unknown.map(f => f.raw))].slice(0, 4).map(x => `"${x}"`).join(", ")})`);
     if (PROFANE.test(t)) bits.push("cursed on live TV");
@@ -2128,15 +2133,17 @@ function toneNote(){
 function opponentPrompt(kind, b){
   const o = S.opp, p = S.player, r = S.rounds[S.ri], P = lastName(p.name);
   const just = justSaid();
+  const askQ = /^(topic|curve)$/.test(r.kind) ? ` ("${clip(currentQuestion(), 220)}")` : "";
   const tasks = {
     opening: `Your opening statement, 100-140 words. Say why you're running and draw a sharp contrast with ${P}.`,
     closing: `Your closing statement, 100-140 words. You have the last word of the night. Use what ${P} actually said tonight and make your final case to undecided voters.`,
-    answer: just ? `Respond to what ${P} just said, then answer the moderator's question, 80-120 words in all.` : `Answer the moderator's question directly, 80-120 words.`,
+    // Small models drift into rebutting the player for the whole answer, so the question is spelled out.
+    answer: just ? `Respond to what ${P} just said in a sentence or two, then answer the moderator's question${askQ}: most of your words go to that answer, 80-120 words in all.` : `Answer the moderator's question${askQ} directly, 80-120 words.`,
     rebuttal: `A quick rebuttal to what ${P} just said, 40-80 words. Go after its weakest point.`
   };
   // With thinking on, the AI already plans privately, and a written PLAN line only invites it to repeat itself.
   const heardLine = just && !think("speech") ? `First write "HEARD: slur" if ${P} just used a slur (a hateful epithet for a group of people; rude words and insults are not slurs), "HEARD: funny" if ${P} just made a genuinely funny joke about the issue, the race or you that a real audience would laugh at (not a random or off-topic one), otherwise "HEARD: normal". Then ` : "";
-  const plan = think("speech") ? "" : `${heardLine ? heardLine + "w" : "First w"}rite one line that starts with "PLAN:" (at most 25 words): ${just ? `what ${P} just said that you must answer, and ` : ""}the angle you'll take. The audience never sees it. Then a blank line, then your spoken words.`;
+  const plan = think("speech") ? "" : `${heardLine ? heardLine + "w" : "First w"}rite one line that starts with "PLAN:" (at most 25 words): ${just ? `what ${P} just said that you must answer, and ` : ""}${kind === "answer" ? "how you'll answer the question" : "the angle you'll take"}. The audience never sees it. Then a blank line, then your spoken words.`;
   // One prepared attack per turn, rotating, so the research doesn't take over every answer.
   const atk = S.oppo && S.oppo.attacks && S.oppo.attacks.length ? S.oppo.attacks[S.lines.filter(l => l.who === "opp" && !l.live).length % S.oppo.attacks.length] : "";
   const oppo = atk || (S.oppo && S.oppo.best)
@@ -2311,7 +2318,9 @@ moderator_line: what ${MOD.name} says next, one sentence in her own voice on liv
 Reply as JSON with provoked_by, kind, react, opp_line, press, follow_up and moderator_line.`});
 }
 
-const REFUSAL = /^(I'?m sorry|I am sorry|I apologi[sz]e|I can(?:'|no)?t (?:help|assist|continue|comply|provide|engage|do that)|As an AI|I won'?t be able|I'?m not able to)/i;
+// The AI declining the task ("I'm sorry, but I can't help with that"). Not a candidate saying
+// "I'm sorry to hear that" or "I cannot stand here after that", which are lines worth keeping.
+const REFUSAL = /^(?:(?:I'?m sorry|I am sorry|I apologi[sz]e)[,.]?\s*(?:but\s+)?(?:I|as an AI)\b[^.]{0,40}?\b(?:can(?:'|no)?t|won'?t|unable|not able)\b(?![^.]{0,30}\b(?:stand|share|let|listen|sit|believe)\b)|I can(?:'|no)?t (?:help|assist|comply|provide|engage|do that|fulfill|create|write)|As an AI|I won'?t be able to (?:help|assist|provide|comply)|I'?m not able to (?:help|assist|provide|comply))/i;
 const reEsc = x => String(x).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 // Keeps only the opponent's own words. Small models sometimes keep going and write the moderator,
 // the voters or the game's scoring; everything from the first such label on is dropped.
@@ -2384,15 +2393,23 @@ const META_SENTENCE = /\b(in character|fourth wall|system prompt|as an ai|langua
 // a sledgehammer" again). At least three sentences always stay.
 function dropRepeats(t){
   const grams = x => { const w = stripTags(x).toLowerCase().replace(/[^a-z' ]+/g, " ").split(/\s+/).filter(Boolean), g = new Set(); for (let i = 0; i + 3 <= w.length; i++) g.add(w.slice(i, i + 3).join(" ")); return g; };
-  const prior = S.lines.filter(l => l.who === "opp" && !l.live && !l.interrupt && l.text).map(l => grams(l.text));
+  const priorLines = S.lines.filter(l => l.who === "opp" && !l.live && !l.interrupt && l.text);
+  const prior = priorLines.map(l => grams(l.text));
   if (!prior.length) return t;
+  // Catchphrases: a short sentence built around a key-word pair from two or more earlier answers
+  // ("That's common sense, folks."). Words from the question being answered don't count.
+  const STOPW = new Set("the a an and or but of to in on for with that this is are was be i you we they it my your our their at as by from not have has will would can just that's it's what when where there here".split(" "));
+  const asked = new Set((currentQuestion().toLowerCase().match(/[a-z']+/g) || []));
+  const pairsOf = x => { const w = stripTags(x).toLowerCase().replace(/[^a-z' ]+/g, " ").split(/\s+/).filter(y => y.length > 3 && !STOPW.has(y)), g = new Set(); for (let i = 0; i + 1 < w.length; i++) if (!asked.has(w[i]) && !asked.has(w[i + 1])) g.add(w[i] + " " + w[i + 1]); return g; };
+  const priorPairs = priorLines.map(l => pairsOf(l.text));
+  const slogan = x => words(x) <= 12 && [...pairsOf(x)].some(k => priorPairs.filter(p => p.has(k)).length >= 2);
   const ss = sentencesOf(t), keep = [];
   let left = ss.length;
   for (const x of ss){
     const g = [...grams(x)];
     const old = g.filter(k => prior.filter(p => p.has(k)).length >= 2).length;
     const lifted = g.length >= 6 ? g.filter(k => prior.some(p => p.has(k))).length / g.length : 0;
-    if (g.length && (old / g.length >= 0.6 || lifted >= 0.5) && left > 3){ left--; continue; }
+    if (((g.length && (old / g.length >= 0.6 || lifted >= 0.5)) || slogan(x)) && left > 3){ left--; continue; }
     keep.push(x);
   }
   return keep.join(" ").trim() || t;
@@ -2429,13 +2446,15 @@ const R_CURSE_STRONG = /\b(f+u+c+k\w*|motherf\w*|(bull|horse)?sh[i1]t\w*|bitch\w
 const R_CURSE_MILD = /\b(damn\w*|hell|crap\w*|pissed|ass|asses|jackass|dumbass)\b/i;
 const R_FAMILY = /\byour (wife|husband|kids?|children|son|daughter|mother|mom|mama|father|dad|family|spouse|sister|brother)\b/i;
 const R_FAMILY_HIT = /\b(looks? like|slept with|cheat\w*|hates? you|ashamed of you|embarrass\w*|so fat|so ugly|so stupid|whore|slut)\b/i;
-const R_LOOKS = /\byou('re| are)( \w+){0,2} (too old|so old|old|ancient|senile|ugly|fat|bald|wrinkly|short)\b|\byour (face|looks|hair|teeth|weight|wrinkles|voice)\b|\b(old man|old woman|old lady|grandpa|granny)\b|\blook at you\b|\b(senile|dementia)\b/i;
+const R_LOOKS = /\byou('re| are)( \w+){0,2} (too old|so old|old|ancient|senile|ugly|fat|bald|wrinkly|short)\b|\byour (face|looks|hair|teeth|weight|wrinkles|voice)\b|\b(old man|old woman|old lady|grandpa|granny)\b|\blook at you\b|\b(senile|dementia)\b|\b(rocking chair|nursing home|retirement home|over the hill|past (his|her|your) prime|put out to pasture)\b/i;
 const R_THREAT = /\b(kick your (ass|butt)|punch (you|your)|knock you out|take (this|it) outside|meet me outside|(see what happens|see you) outside|fight me|(i('ll| will)|gonna|going to) (hurt|kill|beat you up|smack|slap|choke) you|you('re| are) dead)\b/i;
 const CRIME_SRC = "took bribes|takes bribes|bribe\\w*|on the take|a criminal|a crook|a felon|a rapist|raped|sexually assaulted|assaulted|a pedophile|fund(ed|s|ing)? terror\\w*|a terrorist|committed treason|treason|launder\\w*|embezzl\\w*|belongs? in (jail|prison)|should be (in jail|in prison|arrested|locked up)";
 // Dehumanizing a whole group ("immigrants are animals", "send them all back").
 const R_BIGOT = new RegExp("\\b(immigrants?|migrants?|refugees?|muslims?|jews|blacks|black people|asians|mexicans|latinos|hispanics|gays|lesbians|trans(?:gender)? people|women|arabs|africans|those people)\\b[^.!?]{0,30}\\b(are|is)\\s+(all\\s+|just\\s+|nothing but\\s+|a bunch of\\s+)?(animals|vermin|subhuman|parasites|savages|rapists|an infestation|a disease|filth|inferior|not human|less than human)\\b|\\b(go back to (your|their) (own )?countr(y|ies)|send (them|those people) (all )?back where they came from)\\b", "i");
 const R_CONSPIRACY = /\b(deep state|shadow government|globalist\w*|new world order|lizard people|chemtrails?|puppet masters?|stolen election|false flag|do your own research|the elites? control)\b/i;
 const R_PRAISE = /\b(i (actually |really |completely |fully )?agree with (my opponent|you|governor|senator|representative|congress\w+|mr\.?|ms\.?)|(my opponent|you)('s| is| are) (absolutely |completely )?(right|correct)|you make a (good|fair) point|good point|i (respect|admire) (you|my opponent)|credit where|well said)\b/i;
+// Agreeing with the opponent by name ("I agree with Whitaker that…") counts too.
+const isPraise = s => R_PRAISE.test(s) || new RegExp(`\\bi (actually |really |completely |fully )?agree with (${oppNamesSrc()})\\b`, "i").test(s);
 const R_STORY = /\bmy (late )?(mother|mom|father|dad|wife|husband|son|daughter|kids?|child|baby|brother|sister|uncle|aunt|grandma|grandmother|grandpa|grandfather|best friend|dog|cousin)\b[^.!?]{0,90}\b(died|passed away|passed|was killed|killed|overdosed|cancer|couldn'?t afford|went bankrupt|lost everything|lost (his|her|their) (job|home|life))\b/i;
 const R_SONG = /(♪|♫|\b(la ?la ?la+|na ?na ?na+)\b)/i;
 const R_REFUSE = /^\s*(pass|no comment|next( question)?|skip|i pass|no|nope|nothing|k|ok|whatever|idk)\s*[.!?]?\s*$/i;
@@ -2530,7 +2549,7 @@ function classifyLine(text, stepKind){
     if (mod.test(s) && R_BIAS.test(s)) hit("attack_mod");
     else if (mod.test(s) && /\?\s*$/.test(s)) hit("address_mod");
     if (META.test(s) || R_SONG.test(s)) hit("absurd");
-    if (R_PRAISE.test(s)) hit("praise");
+    if (isPraise(s)) hit("praise");
     if (R_STORY.test(s)) hit("story");
     if (R_JOKE.test(s) && (at.test(s) || (S.rounds[S.ri] && S.rounds[S.ri].kind === "topic" && topicHits(s, S.ri) > 0)) && ((S.laughs || {})[S.ri] || 0) < 2) hit("joke");
   }
@@ -2686,11 +2705,13 @@ function kindGrounded(kind, text){
     case "bigotry": return R_GROUP.test(t);
     case "attack_mod": case "address_mod": return modNameRe().test(t) || /\b(moderator|these questions|this question|the questions|you'?re biased|this debate is rigged)\b/i.test(t);
     case "praise": return atOpp && /\b(agree|right|correct|good|fair|respect|admire|credit|well said|thank)\w*/i.test(t);
-    case "lie_record": return atOpp && /\b(voted|votes|vote|said|says|supported|opposed|cut|raised|took|signed|wants|promised|has|have|had|never|always|did|was|were)\b/i.test(t);
+    // A claim about what they did: "voted to…", "slashed…", "promised…" (not "his plan has no price tag").
+    case "lie_record": return atOpp && /\b(voted|votes? (to|for|against)|said|says|supported|opposed|cut|slashed|gutted|raised|took|signed|promised|backed|blocked|killed|sold|tried to|wanted to|called for)\b/i.test(t);
     case "family": return R_FAMILY.test(t);
     case "threat": case "crime": return atOpp;
     case "conspiracy": return R_CONSPIRACY.test(t) || /\b(rigged|cover[- ]?up|secret(ly)?|controls? (the|our)|they don'?t want you to know)\b/i.test(t);
-    case "copy": { const theirs = S.lines.filter(l => l.who === "opp" && !l.live).map(l => l.text).join(" \n "); return !!theirs && overlap(t, theirs) > 0.35; }
+    // "I agree with you that families are hurting" naturally echoes them; that's agreement, not copying.
+    case "copy": { const theirs = S.lines.filter(l => l.who === "opp" && !l.live).map(l => l.text).join(" \n "); return !!theirs && !isPraise(t) && overlap(t, theirs) > 0.35; }
     case "joke": return low.length > 15;
     case "absurd": case "stunt": case "slur": return true;
     default: return false;
@@ -3270,7 +3291,7 @@ function refusalFix(j, ri = S.ri){
   const seg = S.lines.filter(l => l.round === ri && !l.live && !l.interrupt);
   const said = who => seg.filter(l => l.who === who).map(l => l.text).join(" ");
   const empty = who => { const x = said(who).trim(); return !!x && (words(x) < 10 || (R_REFUSE.test(x) && words(x) < 25) || /\b(not (going to )?answer(ing)?|won'?t answer|refuse to answer|next question)\b/i.test(x) && words(x) < 25); };
-  const real = who => words(said(who)) >= 30;
+  const real = who => words(said(who)) >= 20;
   const [PN, ON] = sideNames();
   const quitter = empty("you") && real("opp") ? PN : empty("opp") && real("you") ? ON : null;
   if (!quitter) return j;
@@ -3281,7 +3302,9 @@ function refusalFix(j, ri = S.ri){
   }
   return {...j, shifts, winner: other};
 }
-function applyJudgment(j, ri = S.ri){
+// The scorer's verdict after the game's rules (refusals lose, moves capped, the winner matches which
+// way voters moved), before the voters' current leanings soften it. The AI lab scores with this too.
+function settleVerdict(j, ri = S.ri){
   j = refusalFix(j, ri);
   const shifts = {}, [PN, ON] = sideNames(), side = v => { v = String(v || "").toUpperCase(); return v === PN || v === "YOU" ? 1 : v === ON || v === "OPP" ? -1 : 0; };
   j = {...j, winner: side(j.winner) > 0 ? "you" : side(j.winner) < 0 ? "opp" : "draw"};
@@ -3303,6 +3326,11 @@ function applyJudgment(j, ri = S.ri){
   const against = (j.winner === "you" && net < 0) || (j.winner === "opp" && net > 0) || (j.winner === "draw" && Math.abs(net) > 4);
   if (against && Math.abs(net) >= 4) j.winner = net > 0 ? "you" : "opp"; // clearly moved one way: that side won the segment
   else if (against) BLOCS.forEach(b => { shifts[b.id].d = Math.trunc(shifts[b.id].d / 2); });
+  return {j, shifts, net: BLOCS.reduce((t, b) => t + shifts[b.id].d, 0)};
+}
+function applyJudgment(j, ri = S.ri){
+  const settled = settleVerdict(j, ri), shifts = settled.shifts;
+  j = settled.j;
   // Voters already leaning hard one way are harder to move further (the persuadable ones are gone);
   // pulling them back is full strength, so a comeback is always possible. The closing statement is
   // the last thing undecided voters hear and counts half again.
@@ -4464,10 +4492,8 @@ const Lab = {
         this.progress(`6/7 Scoring ${n + 1}/${LAB_SCORING.length * 2}…`);
         this.scene(st, you, opp);
         const t = await this.time("judge", () => ai("json", "Lab · scoring", fitPrompt(b => judgePrompt(b, 1, false, []), 700), {schema: judgeSchema(false), maxTokens: 700}));
-        const a = refusalFix(t.r || {}, 1);
-        const [PN, ON] = sideNames(), side = v => { v = String(v || "").toUpperCase(); return v === PN ? "you" : v === ON ? "opp" : "draw"; };
-        const net = BLOCS.reduce((n, b) => { const x = a.shifts && a.shifts[b.id]; return n + (x ? (side(x.toward) === "you" ? 1 : side(x.toward) === "opp" ? -1 : 0) * (Number(x.by) || 0) : 0); }, 0);
-        const w = side(a.winner), junk = junkJudge(a);
+        const v = settleVerdict(t.r || {}, 1), a = v.j, net = v.net;
+        const w = a.winner, junk = junkJudge(t.r || {});
         const ok = !junk && w === want && (want === "you" ? net > 0 : net < 0);
         jrows.push(`| ${ok ? "✓" : "✗"} | ${want} | ${w}${junk ? " (blank)" : ""} | ${net > 0 ? "+" : ""}${net} | ${clip(String(a.headline || ""), 70).replace(/\|/g, "/")}${a.fact_check ? ` · fact check: ${clip(String(a.fact_check), 90).replace(/\|/g, "/")}` : ""} | ${(t.ms / 1000).toFixed(1)} |`);
       }
