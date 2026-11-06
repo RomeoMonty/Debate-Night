@@ -39,7 +39,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: ai-lab
+  group: ai-lab-${{ inputs.model }}
   cancel-in-progress: false
 
 env:
