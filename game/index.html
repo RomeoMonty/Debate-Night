@@ -1692,7 +1692,7 @@ function limitSchema(schema){
   const walk = (node, key) => {
     if (!node || typeof node !== "object") return node;
     const n = {...node};
-    if (n.type === "string" && !n.enum) n.maxLength = FIELD_LIMITS[key] || 300;
+    if (n.type === "string" && !n.enum) n.maxLength = FIELD_LIMITS[key] || n.maxLength || 300;
     if (n.type === "integer" && key === "d"){ n.minimum = -6; n.maximum = 6; }
     if (n.type === "array"){
       const [min, max, itemLen] = ARRAY_LIMITS[key] || [0, 6, 200];
@@ -2336,10 +2336,7 @@ ${earlierRounds(b)}
 Reply as JSON with: question.`});
 }
 
-const REACT_SCHEMA = {type:"object", properties:{
-  focus_group:{type:"object", properties:{}}, // one quote per cast voter, keyed by first name (filled in per call)
-  your_party:{type:"string"}, other_party:{type:"string"}, pundit:{type:"string"}
-}, required:["focus_group","your_party","other_party","pundit"]};
+// The focus-group reply's schema is built per call: reactSchema() below.
 
 function reactionsPrompt(a, b, idx, cast){
   const p = S.player, o = S.opp, r = S.rounds[idx], P = lastName(p.name);
@@ -2357,8 +2354,8 @@ ${transcriptText(Math.max(2, b.lines - 1), idx, Math.round(b.tx * 0.8))}`)}
 Reply as JSON with:
 focus_group: the exact words each of these three voters said afterwards, under their first name: 1-2 sentences in the first person ("I…"), in their own voice, about something specific said in this segment:
 ${cast.map((c, i) => `${i + 1}. ${c.who} (${BLOCS.find(x => x.id === c.bloc).name}; ${c.lean}${c.dissent ? "; disagrees with the verdict" : ""})`).join("\n")}
-your_party: one sentence, at most 25 words, on how ${youParty} reacted.
-other_party: one sentence, at most 25 words, on how ${oppParty} reacted.
+${partyKeys()[0]}: one sentence, at most 25 words, on how ${youParty} reacted.
+${partyKeys()[1]}: one sentence, at most 25 words, on how ${oppParty} reacted.
 pundit: one sharp line, at most 25 words, from a cable-news analyst.`});
 }
 
@@ -3376,8 +3373,15 @@ const firstOf = c => c.who.split(",")[0].trim();
 // The focus-group schema has one field per cast voter, named for them, so each quote is that
 // person's and none can be left empty (a flat list of quotes came back with blanks, quotes in the
 // wrong slot and the other fields spilling into it).
-const reactSchema = cast => ({...REACT_SCHEMA, properties:{...REACT_SCHEMA.properties,
-  focus_group:{type:"object", properties:Object.fromEntries(cast.map(c => [firstOf(c), {type:"string", minLength:20}]))}}});
+// The party fields are named for the candidates too: as "your_party" and "other_party", Max sometimes
+// described the wrong side's camp in each (both independents, lab run 24).
+function partyKeys(){
+  const k = s => String(s).toLowerCase().replace(/[^a-z]+/g, "_") + "_side", P = k(lastName(S.player.name)), O = k(S.opp.short);
+  return P === O ? ["player_side", "opponent_side"] : [P, O];
+}
+const reactSchema = cast => { const [pk, ok] = partyKeys(); return {type:"object", properties:{
+  focus_group:{type:"object", properties:Object.fromEntries(cast.map(c => [firstOf(c), {type:"string", minLength:20}]))},
+  [pk]:{type:"string", maxLength:220}, [ok]:{type:"string", maxLength:220}, pundit:{type:"string"}}}; };
 // "Jill: I liked…" → "I liked…". A reply that just repeats who the voter is says nothing.
 function voterQuote(q, c){
   const name = firstOf(c);
@@ -3401,7 +3405,7 @@ async function runReactions(){
     const j = S.judged[idx];
     if (j){
       j.focus = cast.map(c => ({who: c.who, bloc: c.bloc, quote: voterQuote((r.focus_group || {})[firstOf(c)], c)})).filter(f => f.quote);
-      j.yourParty = tidyQuote(r.your_party); j.otherParty = tidyQuote(r.other_party); j.pundit = tidyQuote(r.pundit);
+      const [pk, ok] = partyKeys(); j.yourParty = tidyQuote(r[pk] ?? r.your_party); j.otherParty = tidyQuote(r[ok] ?? r.other_party); j.pundit = tidyQuote(r.pundit);
       save();
       if (S.phase === "debate"){
         renderSide();
