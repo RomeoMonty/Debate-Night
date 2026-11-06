@@ -1615,7 +1615,10 @@ function schemaToGBNF(schema){
 
 // The opponent's speech, when the AI isn't thinking first: exactly one private plan line, then one
 // paragraph of speech. No new lines means it can't start writing other people's parts.
-const SPEAK_GBNF = `speech ::= ([^PpH\\n \\t"*#\u201c${NO_CJK}] | [Pp] [^Ll\\n${NO_CJK}] | "H" [^E\\n${NO_CJK}]) [^\\n${NO_CJK}]{18,1500}`;
+// The speech may open with one expression tag, but not [think]: after it the model writes its
+// private planning ("I need to sound like an engineer… Let's go.") instead of the speech.
+const SPEAK_GBNF = `speech ::= ("[" ("angry" | "furious" | "smug" | "laugh" | "eyeroll" | "sad" | "shock" | "happy") "] ")? first [^\\n${NO_CJK}]{18,1500}
+first ::= [^PpH\\n \\t"*#\\[\u201c${NO_CJK}] | [Pp] [^Ll\\n${NO_CJK}] | "H" [^E\\n${NO_CJK}]`;
 const SPEECH_GBNF = `root ::= "PLAN: " [^\\n${NO_CJK}]{5,220} "\\n\\n" speech\n` + SPEAK_GBNF;
 // When answering the player directly, the opponent first notes whether it just heard a slur.
 const SPEECH_HEARD_GBNF = `root ::= "HEARD: " ("normal" | "slur" | "funny") "\\n" "PLAN: " [^\\n${NO_CJK}]{5,220} "\\n\\n" speech\n` + SPEAK_GBNF;
@@ -2048,7 +2051,12 @@ function figuresOf(t){
   return out;
 }
 // What a candidate can cite and be right: the briefing, their own platform and background, what
-// the moderator asked, and what the other candidate said (quoting them back is fair).
+// the moderator asked, and what the other candidate said (quoting them back is fair). A figure only
+// counts when it is about the same thing: "twenty percent growth in housing starts" is not backed
+// by the briefing's "automatic Social Security cuts of about 20%". Returns figure key -> the word
+// sets of the sentences it appears in.
+const FIG_FILLER = new Set("percent million billion trillion thousand hundred dollars dollar last next nearly almost least than more less around about".split(" "));
+const figWords = t => new Set((String(t).toLowerCase().match(/[a-záéíóúñü]{4,}/g) || []).filter(w => !STOPWORDS.has(w) && !FIG_FILLER.has(w)).map(w => w.replace(/(ings?|ed|es|s|e)$/, "")));
 function knownFigures(who){
   const other = who === "you" ? "opp" : "you";
   const self = who === "you" ? S.player : S.opp;
@@ -2057,7 +2065,17 @@ function knownFigures(who){
   // Their own promises tonight too: "I'll guarantee deposits up to $500,000", then "my firewall
   // guarantees $500,000" is the same promise said again, not a new claim of fact.
   const promised = S.lines.filter(l => l.who === who).flatMap(l => sentencesOf(l.text).filter(x => R_PROPOSAL.test(x)));
-  return new Set([...figuresOf(src), ...promised.flatMap(figuresOf)].map(f => f.key));
+  const known = new Map();
+  [...src.split(/(?<=[.!?;])\s+|\s*\n\s*|",\s*"/), ...promised].forEach(x => figuresOf(x).forEach(f => {
+    if (!known.has(f.key)) known.set(f.key, []); known.get(f.key).push(figWords(x));
+  }));
+  return known;
+}
+// Is this figure, cited in this sentence, backed by a source sentence about the same thing?
+function figureBacked(known, f, sentence){
+  const ctx = known.get(f.key); if (!ctx) return false;
+  const mine = figWords(sentence); if (!mine.size) return true;
+  return ctx.some(c => [...mine].some(w => c.has(w)));
 }
 function analystNotes(ri = S.ri, extra = S.notes){
   const r = S.rounds[ri];
@@ -2072,7 +2090,7 @@ function analystNotes(ri = S.ri, extra = S.notes){
     const bits = [];
     if (r.kind === "topic"){ const h = topicHits(t, ri); if (h >= 2) bits.push("talked about the subject of the question"); else if (!h) bits.push("never touched the subject of the question"); }
     const sents = sentencesOf(t), targets = sents.filter(x => R_PROPOSAL.test(x)).flatMap(figuresOf);
-    const figs = sents.filter(x => !R_PROPOSAL.test(x)).flatMap(figuresOf), unknown = figs.filter(f => !knownFigures(who).has(f.key));
+    const known = knownFigures(who), figs = sents.filter(x => !R_PROPOSAL.test(x)).flatMap(x => figuresOf(x).map(f => ({...f, sent: x}))), unknown = figs.filter(f => !figureBacked(known, f, f.sent));
     if (targets.length) bits.push(`promised ${targets.length} specific target${targets.length > 1 ? "s" : ""} (${targets.slice(0, 3).map(f => f.raw).join(", ")}; promises, not claims of fact)`);
     if (!figs.length){ if (!targets.length) bits.push(nums ? `cited ${nums} number${nums > 1 ? "s" : ""}` : "gave no specific figures"); }
     else if (!unknown.length) bits.push(`cited ${figs.length} specific figure${figs.length > 1 ? "s" : ""}, all matching the briefing, their platform or their own promises`);
