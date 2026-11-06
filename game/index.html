@@ -4275,6 +4275,11 @@ const TestRun = {
     const key = `${ep}:${S.ri}:${S.si}`;
     if (this.playing === key){ this.box = {ta, go}; return; }
     this.playing = key; this.box = {ta, go};
+    // A real player takes a minute or more to write, and the focus groups are written in that time.
+    // The test player's own AI call would bump them every time, so it first waits for them (no longer
+    // than a slow typist would take).
+    const t0 = Date.now(); await new Promise(r => setTimeout(r, 50));
+    while ((reacting || S.reactPending) && ep === epoch && Date.now() - t0 < 180000) await new Promise(r => setTimeout(r, 500));
     let text = "";
     if (P.brief){
       ta.placeholder = `${P.name} is writing…`;
