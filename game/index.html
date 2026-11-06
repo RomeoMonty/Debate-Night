@@ -2403,13 +2403,20 @@ function dropRepeats(t){
   const pairsOf = x => { const w = stripTags(x).toLowerCase().replace(/[^a-z' ]+/g, " ").split(/\s+/).filter(y => y.length > 3 && !STOPW.has(y)), g = new Set(); for (let i = 0; i + 1 < w.length; i++) if (!asked.has(w[i]) && !asked.has(w[i + 1])) g.add(w[i] + " " + w[i + 1]); return g; };
   const priorPairs = priorLines.map(l => pairsOf(l.text));
   const slogan = x => words(x) <= 12 && [...pairsOf(x)].some(k => priorPairs.filter(p => p.has(k)).length >= 2);
+  // A story retold in new words ("My father didn't fix his truck by hoping…" after "My father fixed
+  // his old truck by tightening the bolts…"): most of its key words come from one earlier sentence.
+  const stem = w => w.replace(/(ing|ed|es|s)$/, "");
+  const bag = x => new Set(stripTags(x).toLowerCase().replace(/[^a-z' ]+/g, " ").split(/\s+/).filter(y => y.length > 3 && !STOPW.has(y) && !asked.has(y)).map(stem));
+  const priorSents = priorLines.flatMap(l => sentencesOf(l.text)).map(bag).filter(b => b.size >= 4);
+  const retold = x => { const b = bag(x); if (b.size < 5) return false;
+    return priorSents.some(p => { let n = 0; b.forEach(w => { if (p.has(w)) n++; }); return n >= 4 && n / b.size >= 0.55; }); };
   const ss = sentencesOf(t), keep = [];
   let left = ss.length;
   for (const x of ss){
     const g = [...grams(x)];
     const old = g.filter(k => prior.filter(p => p.has(k)).length >= 2).length;
     const lifted = g.length >= 6 ? g.filter(k => prior.some(p => p.has(k))).length / g.length : 0;
-    if (((g.length && (old / g.length >= 0.6 || lifted >= 0.5)) || slogan(x)) && left > 3){ left--; continue; }
+    if (((g.length && (old / g.length >= 0.6 || lifted >= 0.5)) || slogan(x) || retold(x)) && left > 3){ left--; continue; }
     keep.push(x);
   }
   return keep.join(" ").trim() || t;
@@ -3094,13 +3101,16 @@ async function runCheck(){
   busy = false;
   const extra = [];
   let raw = allowCut && j ? cleanSpeech(String(j.opp_line || "")) : "";
+  // Unless this is the one time they lose it and curse back, the opponent never repeats the
+  // player's filth ("shut your donkey ass up too"): those sentences go.
+  if (raw && !r.curseBack) raw = sentencesOf(raw).filter(x => !(PROFANE.test(x) || R_CURSE_STRONG.test(x) || /\bf[*-]?ing\b/i.test(x))).join(" ").trim();
   if (raw) raw = finishLine(raw);
   if (must && (!raw || REFUSAL.test(raw) || parseMoods(raw).text.length < 2)) raw = pick(MUST_FALLBACK[kind] || ["Excuse me?"]);
   const cut = parseMoods(raw), line = cut.text;
   const META_TALK = /\b(in character|character|the game|a game|script|prompt|AI|simulation|JSON|fourth wall)\b/i;
-  let mod = j ? String(j.moderator_line || "").trim() : "";
+  let mod = j ? stripModLabel(j.moderator_line) : "";
   if (META_TALK.test(mod)) mod = "";
-  let follow = j && dodge && j.press ? String(j.follow_up || "").trim() : "";
+  let follow = j && dodge && j.press ? stripModLabel(j.follow_up) : "";
   if (META_TALK.test(follow)) follow = "";
   if (follow){
     const before = S.lines.filter(l => l.who === "mod").map(l => l.text).join(" \n ");
@@ -3246,7 +3256,13 @@ async function runReactions(){
 // Make sure the moderator's next question is addressed to the right candidate.
 const ADDRESS_WORD = /^(Mr\.?|Ms\.?|Mrs\.?|Madam|Senator|Sen\.?|Governor|Gov\.?|Mayor|General|Gen\.?|Dr\.?|Doctor|Representative|Rep\.?|Congressman|Congresswoman|[A-Z][a-zA-Z'-]+)$/;
 const COMMON_START = /^(What|How|Why|When|Where|Who|Which|Do|Does|Did|Is|Are|Can|Could|Would|Will|Should|If|In|The|Your|You|Let|Tell|Name|Give|Explain|So|And|But|Now|Many|Some|Last|This|That)\b/;
+// "Elaine Brooks: Governor Ellis, …" → "Governor Ellis, …" (small models sometimes write the speaker label).
+function stripModLabel(t){
+  const who = [MOD.name, MOD.short, MOD.name.split(" ")[0], MOD.name.split(" ").pop(), "moderator"].map(reEsc).join("|");
+  return String(t || "").replace(new RegExp(`^\\s*[*_]*(?:(?:ms|mrs|mr)\\.?\\s+)?(?:${who})[*_]*\\s*(\\([^)]*\\))?\\s*:\\s*`, "i"), "").trim();
+}
 function fixAddressee(q, next){
+  q = stripModLabel(q);
   const target = next.first === "you" ? S.player : S.opp;
   // Drop any opening "Senator Somebody," (even the right one) and name them at the end instead,
   // so the question keeps its own capitals: "…what would you do, Governor Ellis?"
@@ -3286,6 +3302,16 @@ function skipStep(){
 
 // A candidate who refused to answer while the other gave a real one doesn't gain voters for it,
 // whatever the scorer wrote: moves toward them flip to the other side (gently).
+// Who the scorer's own words say won: "Grant won…", "Ellis loses credibility…".
+function summaryWinner(j){
+  const t = `${j.summary || ""} ${j.headline || ""}`, [PN, ON] = sideNames();
+  const nm = n => reEsc(n === "THE PLAYER" ? "the player" : n === "THE OPPONENT" ? "the opponent" : n);
+  const WIN = "(won|wins|winning|scores?|scored|beats?|takes?|took|outshines?|outshone|dominates?|dominated|carries|carried|prevails?|prevailed)";
+  const LOSE = "(lost|loses|losing|stumbles?|stumbled|falters?|faltered|fumbles?|fumbled|dodges?|dodged|refuses?|refused|curses?|cursed|melts? down|collapses?|implodes?)";
+  const says = (n, verbs) => new RegExp(`\\b${nm(n)}\\b[^.;]{0,25}?\\b${verbs}\\b`, "i").test(t);
+  const you = (says(PN, WIN) ? 1 : 0) + (says(ON, LOSE) ? 1 : 0), opp = (says(ON, WIN) ? 1 : 0) + (says(PN, LOSE) ? 1 : 0);
+  return you > opp ? "you" : opp > you ? "opp" : null;
+}
 function refusalFix(j, ri = S.ri){
   if (!j || !j.shifts || !S.rounds[ri] || !/^(topic|curve)$/.test(S.rounds[ri].kind)) return j;
   const seg = S.lines.filter(l => l.round === ri && !l.live && !l.interrupt);
@@ -3306,6 +3332,8 @@ function refusalFix(j, ri = S.ri){
 // way voters moved), before the voters' current leanings soften it. The AI lab scores with this too.
 function settleVerdict(j, ri = S.ri){
   j = refusalFix(j, ri);
+  // "None", "N/A", "No false claims." mean there's nothing to fact-check.
+  if (/^\s*["']?(none|n\/?a|nothing|null|no (false|misleading|inaccurate)[^.]*|no claims?[^.]*|-+)\s*\.?["']?\s*$/i.test(String(j.fact_check || ""))) j = {...j, fact_check: ""};
   const shifts = {}, [PN, ON] = sideNames(), side = v => { v = String(v || "").toUpperCase(); return v === PN || v === "YOU" ? 1 : v === ON || v === "OPP" ? -1 : 0; };
   j = {...j, winner: side(j.winner) > 0 ? "you" : side(j.winner) < 0 ? "opp" : "draw"};
   for (const b of BLOCS){
@@ -3324,7 +3352,11 @@ function settleVerdict(j, ri = S.ri){
   // player reads) and halve the moves, since the scorer wasn't sure.
   const net = BLOCS.reduce((t, b) => t + shifts[b.id].d, 0);
   const against = (j.winner === "you" && net < 0) || (j.winner === "opp" && net > 0) || (j.winner === "draw" && Math.abs(net) > 4);
-  if (against && Math.abs(net) >= 4) j.winner = net > 0 ? "you" : "opp"; // clearly moved one way: that side won the segment
+  // When they disagree, the written summary breaks the tie: "Grant won the exchange…" with every
+  // bloc marked toward Ellis means the moves were written backwards ("moved because of Ellis").
+  const told = summaryWinner(j);
+  if (against && Math.abs(net) >= 4 && told && told === j.winner && j.winner !== "draw") BLOCS.forEach(b => { shifts[b.id].d = -shifts[b.id].d; });
+  else if (against && Math.abs(net) >= 4) j.winner = net > 0 ? "you" : "opp"; // clearly moved one way: that side won the segment
   else if (against) BLOCS.forEach(b => { shifts[b.id].d = Math.trunc(shifts[b.id].d / 2); });
   return {j, shifts, net: BLOCS.reduce((t, b) => t + shifts[b.id].d, 0)};
 }
