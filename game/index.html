@@ -4537,7 +4537,9 @@ const Lab = {
         // What the game ends up with: the words' verdict, unless the AI saw something more serious that
         // the line backs up (and that the game takes from the AI at all).
         const TAKE = /^(slur|bigotry|family|threat|crime|crude|lie_record|conspiracy|absurd|stunt|copy|attack_mod|joke)$/;
-        const aiUsed = aiK && aiK !== code && code !== "joke" && TAKE.test(aiK) && jokeOk && grounded && (!code || BEATS[aiK].sev > BEATS[code].sev);
+        // As in the game, a slur only counts when the second, narrow slur check agrees.
+        const slurOk = aiK !== "slur" || code === "slur" || await confirmSlur(line).catch(() => false);
+        const aiUsed = aiK && aiK !== code && code !== "joke" && TAKE.test(aiK) && jokeOk && grounded && slurOk && (!code || BEATS[aiK].sev > BEATS[code].sev);
         const game = aiUsed ? aiK : code || "none";
         const kindAlias = k => k === "curse_at" || k === "curse_strong" || k === "curse_mild" ? "curse" : k;
         const ok = want.includes(kindAlias(game));
