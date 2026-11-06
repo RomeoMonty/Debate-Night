@@ -2139,7 +2139,9 @@ function opponentPrompt(kind, b){
     opening: `Your opening statement, 100-140 words. Say why you're running and draw a sharp contrast with ${P}.`,
     closing: `Your closing statement, 100-140 words. You have the last word of the night. Use what ${P} actually said tonight and make your final case to undecided voters.`,
     // Small models drift into rebutting the player for the whole answer, so the question is spelled out.
-    answer: just ? `Respond to what ${P} just said in a sentence or two, then answer the moderator's question${askQ}: most of your words go to that answer, 80-120 words in all.` : `Answer the moderator's question${askQ} directly, 80-120 words.`,
+    // The character question is about the player's own record: the opponent weighs in on it, it isn't theirs to answer.
+    answer: r.kind === "curve" && r.first === "you" ? `The moderator's question was for ${P}, about ${P}'s own record${askQ}; it is not about you or your record. Say what ${P}'s answer leaves out or gets wrong and what it tells voters about ${P}, then contrast your own record, 80-120 words.`
+      : just ? `Respond to what ${P} just said in a sentence or two, then answer the moderator's question${askQ}: most of your words go to that answer, 80-120 words in all.` : `Answer the moderator's question${askQ} directly, 80-120 words.`,
     rebuttal: `A quick rebuttal to what ${P} just said, 40-80 words. Go after its weakest point.`
   };
   // With thinking on, the AI already plans privately, and a written PLAN line only invites it to repeat itself.
