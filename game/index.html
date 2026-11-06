@@ -2007,7 +2007,26 @@ const NUMW = {one:1, two:2, three:3, four:4, five:5, six:6, seven:7, eight:8, ni
 const SCALE = {thousand:1e3, million:1e6, billion:1e9, trillion:1e12};
 // Sentences that promise or propose ("I'll cap rent at 3%"): their numbers are targets, not facts.
 const R_PROPOSAL = /\b(i'?ll|i will|we'?ll|we will|i would|we would|i'?d|we'?d|my plan|our plan|i propose|proposing|going to|plan to|i want to|we want to|i'm calling for|let'?s)\b/i;
+// "four hundred thousand" → "400000", "twenty-five" → "25", "two point five" → "2.5"; "million" and
+// larger stay words, so "three million" → "3 million" is handled below like "3 million".
+const NUM_SMALL = {zero:0, one:1, two:2, three:3, four:4, five:5, six:6, seven:7, eight:8, nine:9, ten:10, eleven:11, twelve:12, thirteen:13, fourteen:14, fifteen:15, sixteen:16, seventeen:17, eighteen:18, nineteen:19, twenty:20, thirty:30, forty:40, fifty:50, sixty:60, seventy:70, eighty:80, ninety:90};
+const NUM_RUN = new RegExp(`\\b(?:${Object.keys(NUM_SMALL).join("|")}|hundred|thousand)(?:(?:[\\s-]+and[\\s-]+|[\\s-]+point[\\s-]+|[\\s-]+)(?:${Object.keys(NUM_SMALL).join("|")}|hundred|thousand))*\\b`, "gi");
+function spelledNumbers(t){
+  return String(t).replace(NUM_RUN, run => {
+    const toks = run.toLowerCase().split(/[\s-]+/).filter(w => w !== "and");
+    let total = 0, cur = 0, dec = null;
+    for (const w of toks){
+      if (w === "point"){ dec = ""; continue; }
+      if (dec !== null){ if (NUM_SMALL[w] < 10) dec += NUM_SMALL[w]; continue; }
+      if (w === "hundred") cur = (cur || 1) * 100;
+      else if (w === "thousand"){ total += (cur || 1) * 1000; cur = 0; }
+      else cur += NUM_SMALL[w];
+    }
+    return String(total + cur) + (dec ? "." + dec : "");
+  });
+}
 function figuresOf(t){
+  t = spelledNumbers(t);
   const out = [], re = /(\$\s?)?\b(\d[\d,]*(?:\.\d+)?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred)\b(?:\s*(%|percent\b|thousand\b|million\b|billion\b|trillion\b))?/gi;
   let m;
   while ((m = re.exec(String(t)))){
@@ -2167,7 +2186,7 @@ ${recordText(b)}
 `)}${txOr(`NOW: segment ${S.ri + 1}, ${r.label}. Everything said so far is in the transcript messages above.`, `LATEST (segment: ${r.label}):
 ${transcriptText(b.lines, null, b.tx, just) || "(nothing yet)"}`)}
 ${heard}${mood}
-YOUR TURN: ${tasks[kind]} Stay in your voice: ${clip(o.voice, 160)}${openersNote()}${phrasesNote()}${toneNote()}
+YOUR TURN: ${tasks[kind]} Stay in your voice: ${clip(o.voice, 160)} (Pet phrases, family sayings and life stories are for once or twice a night, not every answer.)${openersNote()}${phrasesNote()}${toneNote()}
 ${rulesInBriefing() ? `Follow the OPPONENT RULES.${plan ? " " + plan : ""}` : oppRules() + (plan ? "\n" + plan : "")}`});
 }
 
@@ -3361,6 +3380,9 @@ function settleVerdict(j, ri = S.ri){
   j = refusalFix(j, ri);
   // "None", "N/A", "No false claims." mean there's nothing to fact-check.
   if (/^\s*["']?(none|n\/?a|nothing|null|no (false|misleading|inaccurate)[^.]*|no claims?[^.]*|-+)\s*\.?["']?\s*$/i.test(String(j.fact_check || ""))) j = {...j, fact_check: ""};
+  // "…this is a new proposal, so no fact check error is present": a note that clears the claim it names.
+  { const fc = String(j.fact_check || ""), rest = fc.replace(/\b(no (other )?(fact[- ]?check )?(errors?|issues?|problems?|false claims?|falsehoods?)( (is|are|was|were))?( (present|found|made|here))?|nothing (false|to (fact[- ]?)?check))\b/gi, "");
+    if (rest !== fc && !/\b(false|incorrect|wrong|untrue|contradict|made[- ]up|fabricat|invent|mislead|unverified|exaggerat|impossible|debunk|lie|lying)/i.test(rest)) j = {...j, fact_check: ""}; }
   const shifts = {}, [PN, ON] = sideNames(), side = v => { v = String(v || "").toUpperCase(); return v === PN || v === "YOU" ? 1 : v === ON || v === "OPP" ? -1 : 0; };
   j = {...j, winner: side(j.winner) > 0 ? "you" : side(j.winner) < 0 ? "opp" : "draw"};
   for (const b of BLOCS){
