@@ -2939,7 +2939,7 @@ async function runOpponent(kind){
   try {
     const answering = !!justSaid();
     const opts = {maxTokens: kind === "rebuttal" ? 200 : kind === "opening" || kind === "closing" ? 380 : 300, think: think("speech"),
-      wordCap: think("speech") ? 0 : kind === "rebuttal" ? 85 : kind === "opening" || kind === "closing" ? 145 : 125, grammar: think("speech") ? null : answering ? SPEECH_HEARD_GBNF : SPEECH_GBNF,
+      wordCap: think("speech") ? 0 : kind === "rebuttal" ? 85 : kind === "opening" || kind === "closing" ? 140 : 115, grammar: think("speech") ? null : answering ? SPEECH_HEARD_GBNF : SPEECH_GBNF,
       onText: t => { if (ep !== epoch) return; const sp = stripTags(splitPlan(stripHeard(t)).speech.replace(/\*\*?/g, "")); ln.text = sp; if (node){ node.textContent = sp; node.classList.add("typing"); scrollStage(); } }};
     const prompt = fitPrompt(b => opponentPrompt(kind, b), opts.maxTokens);
     const raw = await ai("text", `${S.opp.short} · ${kind}`, prompt, opts);
@@ -3074,7 +3074,9 @@ async function runCheck(){
   const quote = normWords(j && j.provoked_by);
   const quoted = quote.length >= 3 && lastYou && normWords(lastYou.text).includes(quote);
   const aiK = j && AI_KINDS.includes(j.kind) ? j.kind : null;
-  const grounded = !!(quoted || (aiK && lastYou && kindGrounded(aiK, lastYou.text)) || (kind && st.kind === kind && lastYou));
+  // Copying is a matter of overlap with what they said, so quoting the player's line doesn't prove it.
+  const grounded = aiK === "copy" ? !!(lastYou && kindGrounded("copy", lastYou.text))
+    : !!(quoted || (aiK && lastYou && kindGrounded(aiK, lastYou.text)) || (kind && st.kind === kind && lastYou));
   // What the AI noticed that word lists can't: a slur, bigotry, a lie about the record, nonsense.
   let must = !!st.must;
   const aiKind = j && AI_KINDS.includes(j.kind) && BEATS[j.kind] ? j.kind : null;
@@ -4460,11 +4462,13 @@ const Lab = {
         const j = t.r || {};
         const aiK = AI_KINDS.includes(j.kind) && BEATS[j.kind] ? j.kind : null;
         const quoted = normWords(j.provoked_by).length >= 3 && normWords(line).includes(normWords(j.provoked_by));
-        const grounded = quoted || (aiK && kindGrounded(aiK, line));
+        const grounded = aiK === "copy" ? kindGrounded("copy", line) : quoted || (aiK && kindGrounded(aiK, line));
+        // The game only laughs at a joke about the race, the opponent or the subject (as jokeLands does).
+        const jokeOk = aiK !== "joke" || new RegExp(`\\b(${oppNamesSrc()}|you|your|washington|congress|president|white house|voters|election|campaign|debate)\\b`, "i").test(line) || topicHits(line, S.ri) > 0;
         // What the game ends up with: the words' verdict, unless the AI saw something more serious that
         // the line backs up (and that the game takes from the AI at all).
         const TAKE = /^(slur|bigotry|family|threat|crime|crude|lie_record|conspiracy|absurd|stunt|copy|attack_mod|joke)$/;
-        const aiUsed = aiK && aiK !== code && code !== "joke" && TAKE.test(aiK) && (grounded || (BEATS[aiK] || {}).absurd) && (!code || BEATS[aiK].sev > BEATS[code].sev);
+        const aiUsed = aiK && aiK !== code && code !== "joke" && TAKE.test(aiK) && jokeOk && (grounded || (BEATS[aiK] || {}).absurd) && (!code || BEATS[aiK].sev > BEATS[code].sev);
         const game = aiUsed ? aiK : code || "none";
         const kindAlias = k => k === "curse_at" || k === "curse_strong" || k === "curse_mild" ? "curse" : k;
         const ok = want.includes(kindAlias(game));
@@ -4501,7 +4505,7 @@ const Lab = {
         this.progress(`4/7 Opponent speeches ${n + 1}/${speechCases.length * 2}…`);
         this.scene(st, line);
         const c = classifyLine(line, "answer"); if (c.top) RS().pending = {kind: c.top, ri: 1, at: 2};
-        const t = await this.time("speech", () => ai("text", "Lab · speech", fitPrompt(b => opponentPrompt("answer", b), 300), {maxTokens: 300, grammar: SPEECH_HEARD_GBNF, wordCap: 125}));
+        const t = await this.time("speech", () => ai("text", "Lab · speech", fitPrompt(b => opponentPrompt("answer", b), 300), {maxTokens: 300, grammar: SPEECH_HEARD_GBNF, wordCap: 115}));
         const raw = String(t.r || "");
         const heard = (/^\s*HEARD:\s*(\w+)/i.exec(raw) || [])[1] || "(none)";
         const sp = splitPlan(stripHeard(raw));
@@ -4528,7 +4532,7 @@ const Lab = {
       for (let i = 0; i < qs.length; i++){
         this.progress(`5/7 Repetition ${i + 1}/${qs.length}…`);
         st.lines.push({who:"mod", text: qs[i], t:100 + i * 60, round:1});
-        const t = await this.time("rep", () => ai("text", "Lab · repetition", fitPrompt(b => opponentPrompt("answer", b), 300), {maxTokens: 300, grammar: SPEECH_GBNF, wordCap: 125}));
+        const t = await this.time("rep", () => ai("text", "Lab · repetition", fitPrompt(b => opponentPrompt("answer", b), 300), {maxTokens: 300, grammar: SPEECH_GBNF, wordCap: 115}));
         const before = dropMetaTalk(cleanSpeech(splitPlan(stripHeard(String(t.r || ""))).speech));
         const text = parseMoods(dropRepeats(before)).text;
         const cutN = sentencesOf(before).length - sentencesOf(dropRepeats(before)).length;
