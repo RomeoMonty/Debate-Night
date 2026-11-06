@@ -1917,7 +1917,8 @@ Hurts a candidate: dodging, vagueness, false or impossible claims, silly answers
 A number in a promise ("I'll build 3 million homes") is a target, not a claim of fact: judge whether it's believable and paid for, not whether the briefing mentions it. A number stated as fact about the past or the present ("rents fell 40% under me") is what fact-checkers check.
 Profanity, insults and outrageous statements get the reactions real people would have: some voters cheer a brawler, others recoil, depending on the bloc and the delivery.
 Anchors: a concrete, costed plan that answers the question moves the blocs it targets 2-3 toward that candidate; a joke or a non-answer moves most blocs 2-4 toward the other candidate; cursing or a personal insult on stage moves most blocs 3-5 away from whoever did it (a few may shrug, 0-1); a candidate who just repeats an earlier answer gains nothing.
-Fields: analysis (2 short sentences, written first: did each candidate answer, what was concrete or empty, true or false, which blocs care; everything after must follow from it), summary (one sentence: who won the exchange and why), winner ("${P}", "${O}" or "draw"), fact_check (any false, misleading or impossible claim, naming who said it; "" if none), shifts (for every bloc: why = at most 5 words on what it reacted to; toward = "${P}", "${O}" or "neither"; by = 0-6, where 0 means nothing mattered to them, 1-2 slight, 3-4 solid, 5-6 only a defining moment or disaster), headline (news headline, at most 12 words), new_claims (short concrete promises or claims each candidate made this segment).`;
+Anchors for facts: a made-up statistic or a false claim about someone's record, stated as fact, costs whoever said it 2-4 with most blocs once it's caught, more than the rest of that answer earned; a true figure from the briefing is not false just because it hurts someone.
+Fields, in this order: analysis (2 short sentences, written first: did each candidate answer, what was concrete or empty, which blocs care), fact_check (any false, misleading or impossible claim stated as fact, naming who said it and what the briefing says instead; "" if none), summary (one sentence: who won the exchange and why, following from the analysis and the fact check), winner ("${P}", "${O}" or "draw"), shifts (for every bloc: why = at most 5 words on what it reacted to; toward = "${P}", "${O}" or "neither"; by = 0-6, where 0 means nothing mattered to them, 1-2 slight, 3-4 solid, 5-6 only a defining moment or disaster), headline (news headline, at most 12 words), new_claims (short concrete promises or claims each candidate made this segment).`;
 }
 
 function gameContext(b){
@@ -2176,14 +2177,14 @@ function judgeSchema(withNext = true){
   const shiftProps = Object.fromEntries(BLOCS.map(b => [b.id, {type:"object", properties:{why:{type:"string"}, toward:{type:"string", enum:[P, O, "neither"]}, by:{type:"integer", enum:[0,1,2,3,4,5,6]}}, required:["why","toward","by"]}]));
   return {type:"object", properties:{
     analysis:{type:"string"},
+    fact_check:{type:"string"},
     summary:{type:"string"},
     winner:{type:"string", enum:[P, O, "draw"]},
-    fact_check:{type:"string"},
     shifts:{type:"object", properties:shiftProps, required:BLOCS.map(b => b.id)},
     headline:{type:"string"},
     new_claims:{type:"object", properties:{you:{type:"array", items:{type:"string"}}, opp:{type:"array", items:{type:"string"}}}, required:["you","opp"]},
     ...(withNext ? {next_question:{type:"string"}} : {})
-  }, required:["analysis","summary","winner","fact_check","shifts","headline","new_claims", ...(withNext ? ["next_question"] : [])]};
+  }, required:["analysis","fact_check","summary","winner","shifts","headline","new_claims", ...(withNext ? ["next_question"] : [])]};
 }
 
 // A scoring reply with no real words in it (the model sometimes degenerates into punctuation).
@@ -2208,7 +2209,7 @@ ${transcriptText(8, ri, b.tx)}`)}
 
 ANALYST NOTES (measured): ${analystNotes(ri, notes)}
 
-Reply as JSON with analysis, summary, winner, fact_check, shifts, headline and new_claims${nextQ ? ", plus:\n" + nextQ : "."}`});
+Reply as JSON with analysis, fact_check, summary, winner, shifts, headline and new_claims${nextQ ? ", plus:\n" + nextQ : "."}`});
 }
 
 const CURVE_SCHEMA = {type:"object", properties:{question:{type:"string"}}, required:["question"]};
