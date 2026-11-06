@@ -565,7 +565,9 @@ const SWING = [
  {id:"NV", name:"Nevada", ev:6, w:{suburban:.18, working:.20, latino:.32, young:.15, seniors:.15}}
 ];
 const BASE_EV = {you:222, opp:223}; // everything outside the 7 battlegrounds (93 EVs)
-const BLOC_SCALE = 0.25;            // bloc lean (pts) → state margin (pts)
+// bloc lean (pts) → state margin (pts). Big enough that the debate decides a race: a candidate who
+// loses most segments loses the battlegrounds, rather than the starting map and election-night luck.
+const BLOC_SCALE = 0.5;
 
 const TOPICS = [
  {id:"econ", label:"Cost of living & housing", q:"Rent and mortgage payments now take more than a third of income for a typical family, and grocery and insurance bills are still far above where they were in 2020. What specifically would you do in your first year to bring those costs down, and how would you pay for it?"},
@@ -3467,7 +3469,7 @@ async function finishElection(){
   if (ep !== epoch) return;
   if (S.reactPending) await runReactions();
   if (ep !== epoch) return;
-  const noise = Object.fromEntries(SWING.map(s => [s.id, +rnd(-1.2, 1.2).toFixed(2)]));
+  const noise = Object.fromEntries(SWING.map(s => [s.id, +rnd(-0.8, 0.8).toFixed(2)]));
   const won = w => S.judged.filter(j => j && j.winner === w).length;
   const pr = projection(noise, won("you") >= won("opp") ? 0.1 : -0.1);
   const res = {...pr, winner: pr.evYou >= 270 ? "you" : "opp"};
@@ -4438,7 +4440,8 @@ const Lab = {
   },
   // A short debate so far: the question, the opponent's answer, then the line being tested.
   scene(st, youLine, oppLine){
-    const q = topicQuestion("econ", st.world);
+    // The fixed housing question, not this world's crisis version (a rail strike, say): the test answers are all about housing.
+    const q = TOPICS.find(t => t.id === "econ").q;
     st.lines = [
       {who:"mod", text:q, t:0, round:1},
       {who:"opp", text: oppLine || "Here's the deal. Rents are crushing families in Ohio and everywhere else. I'll cut red tape so builders can build, and I won't raise a dime in new taxes to do it.", t:30, round:1}];
