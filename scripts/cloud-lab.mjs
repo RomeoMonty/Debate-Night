@@ -28,6 +28,27 @@ fs.mkdirSync(OUT, { recursive: true });
 const req = createRequire(env.PW_DIR ? path.join(path.resolve(env.PW_DIR), "x.js") : import.meta.url);
 const { chromium } = req("playwright");
 
+// On the build machine, each report is pushed to the lab-reports branch as soon as it's saved, so a
+// run that dies later (the machine can shut down) still leaves what it finished.
+function publish(){
+  if (!env.PUBLISH_DIR || !env.GH_TOKEN || !env.GITHUB_REPOSITORY) return;
+  const rep = path.join(os.tmpdir(), "lab-publish"), url = `https://x-access-token:${env.GH_TOKEN}@github.com/${env.GITHUB_REPOSITORY}.git`;
+  const run = c => execSync(c, { cwd: rep, stdio: "ignore" });
+  try {
+    fs.rmSync(rep, { recursive: true, force: true });
+    try { execSync(`git clone -q --depth 1 --branch lab-reports "${url}" "${rep}"`, { stdio: "ignore" }); }
+    catch(e){ fs.mkdirSync(rep, { recursive: true }); run("git init -q -b lab-reports"); run(`git remote add origin "${url}"`);
+      fs.writeFileSync(path.join(rep, "README.md"), "# AI lab reports\n\nWritten by the \"AI lab (real model)\" workflow. Each folder under runs/ is one run.\n"); }
+    const dest = path.join(rep, env.PUBLISH_DIR); fs.mkdirSync(dest, { recursive: true });
+    for (const f of fs.readdirSync(OUT)) fs.copyFileSync(path.join(OUT, f), path.join(dest, f));
+    run("git add -A");
+    try { run("git diff --cached --quiet"); return; } catch(e){}
+    run(`git -c user.name="AI lab" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -q -m "Lab ${env.PUBLISH_DIR}: progress"`);
+    run("git push -q origin HEAD:lab-reports");
+  } catch(e){ console.log("(couldn't publish progress yet)"); }
+}
+function progressFile(){ fs.writeFileSync(path.join(OUT, `${stamp}-run.md`), `# Cloud lab run (in progress)\n\n${machine()}\n\n## Steps\n\n${notes.map(n => "    " + n).join("\n")}\n`); fs.writeFileSync(path.join(OUT, `${stamp}-engine.log`), serverLog.slice(-3000).join("\n")); }
+
 const notes = [];
 const note = s => { const line = `${new Date().toISOString().slice(11, 19)} ${s}`; console.log(line); notes.push(line); };
 
@@ -119,6 +140,7 @@ async function main(){
   await page.click("#startBtn");
   await page.waitForSelector("#answerBox", { timeout: 30 * 60e3 });
   note("The debate started; the AI is answering.");
+  progressFile(); publish();
   const deadline = Date.now() + HOURS * 3600e3;
   const saved = [];
 
@@ -129,6 +151,7 @@ async function main(){
     await page.click("#testBox .btn:has-text('Run the AI lab')");
     const d = await dl; const f = path.join(OUT, `${stamp}-lab.md`); await d.saveAs(f); saved.push(f);
     note(`Lab report saved: ${path.basename(f)}`);
+    progressFile(); publish();
     await page.keyboard.press("Escape").catch(() => {});
   }
   if (MODE === "debates" || MODE === "both"){
@@ -142,7 +165,12 @@ async function main(){
     let last = -1;
     while (Date.now() < deadline){
       const st = await page.evaluate(() => ({ active: !!TestRun.active, done: TestRun.reports.length }));
-      if (st.done !== last){ note(`${st.done}/${ids.length} debates done`); last = st.done; }
+      if (st.done !== last){
+        note(`${st.done}/${ids.length} debates done`); last = st.done;
+        // Each finished debate's report goes up right away, too.
+        if (st.done){ try { const dl = page.waitForEvent("download", { timeout: 60e3 }); await page.evaluate(() => TestRun.download()); await (await dl).saveAs(path.join(OUT, `${stamp}-debates.md`)); } catch(e){} }
+        progressFile(); publish();
+      }
       if (!st.active && st.done >= ids.length) break;
       await new Promise(r => setTimeout(r, 5000));
     }
@@ -157,6 +185,7 @@ async function main(){
   const head = `# Cloud lab run\n\n${machine()}\nMode: ${MODE}${MODE !== "lab" ? ` · players: ${PERSONAS.join(", ")}` : ""}\n${env.NOTE ? `Checking: ${env.NOTE}\n` : ""}\n## Steps\n\n${notes.map(n => "    " + n).join("\n")}\n\n## Errors in the game page\n\n${errors.length ? errors.slice(0, 200).map(e => "- " + e).join("\n") : "None."}\n`;
   fs.writeFileSync(path.join(OUT, `${stamp}-run.md`), head);
   fs.writeFileSync(path.join(OUT, `${stamp}-engine.log`), serverLog.slice(-3000).join("\n"));
+  publish();
   await browser.close();
   return saved;
 }

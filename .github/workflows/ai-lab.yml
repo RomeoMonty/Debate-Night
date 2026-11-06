@@ -96,6 +96,8 @@ jobs:
           OUT: ${{ runner.temp }}/lab-out
           HOURS: "5.2"
           NO_MLOCK: "1"
+          PUBLISH_DIR: runs/${{ github.run_number }}-${{ inputs.mode }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           export MODEL_PATH="$HOME/models/$MODEL_FILE"
           node scripts/cloud-lab.mjs
@@ -119,6 +121,7 @@ jobs:
           mkdir -p "$dest" && cp "$out"/* "$dest"/
           printf '%s\n' "commit: ${GITHUB_SHA}" "mode: $RUN_MODE" "personas: $RUN_PERSONAS" "model: $RUN_MODEL" "note: $RUN_NOTE" > "$dest/about.txt"
           git add -A
+          git diff --cached --quiet && { echo "Already saved."; exit 0; }
           git -c user.name="AI lab" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -q -m "Lab run ${{ github.run_number }}: $RUN_MODE at ${GITHUB_SHA::7}"
           git push -q origin HEAD:lab-reports
           echo "Saved to lab-reports/$dest"
