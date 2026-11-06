@@ -1608,7 +1608,7 @@ function schemaToGBNF(schema){
 
 // The opponent's speech, when the AI isn't thinking first: exactly one private plan line, then one
 // paragraph of speech. No new lines means it can't start writing other people's parts.
-const SPEAK_GBNF = 'speech ::= ([^Pp\\n \\t"*#\u201c] | [Pp] [^Ll\\n]) [^\\n]{18,1500}';
+const SPEAK_GBNF = 'speech ::= ([^PpH\\n \\t"*#\u201c] | [Pp] [^Ll\\n] | "H" [^E\\n]) [^\\n]{18,1500}';
 const SPEECH_GBNF = 'root ::= "PLAN: " [^\\n]{5,220} "\\n\\n" speech\n' + SPEAK_GBNF;
 // When answering the player directly, the opponent first notes whether it just heard a slur.
 const SPEECH_HEARD_GBNF = 'root ::= "HEARD: " ("normal" | "slur" | "funny") "\\n" "PLAN: " [^\\n]{5,220} "\\n\\n" speech\n' + SPEAK_GBNF;
@@ -2214,7 +2214,7 @@ Reply as JSON with analysis, summary, winner, fact_check, shifts, headline and n
 const CURVE_SCHEMA = {type:"object", properties:{question:{type:"string"}}, required:["question"]};
 function curvePrompt(b, next){
   const who = next.first === "you" ? displayName(S.player) : displayName(S.opp);
-  return withHistory({system: gameContext(b), user: `TASK: Write moderator ${MOD.name}'s next question, for ${who}, about character and record. Probe a real weakness or contradiction in their background, their platform, or something they said tonight. 1-3 sentences. She is strictly neutral: no insults, no praise for either candidate, no comments on how the debate is going.
+  return withHistory({system: gameContext(b), user: `TASK: Write moderator ${MOD.name}'s next question, for ${who}, about character and record. Probe a real weakness or contradiction in their background, their platform, or something they said tonight. Use only facts from their background and platform or their own words tonight: what their opponent claimed about them is an accusation, not their record (you may ask them to respond to it, as an accusation). 1-3 sentences, at most 60 words, ending with the question. She is strictly neutral: no insults, no praise for either candidate, no comments on how the debate is going.
 ${txOr("", `
 WHAT WAS SAID TONIGHT:
 ${earlierRounds(b)}
@@ -2340,15 +2340,19 @@ function cleanSpeech(t, as = "opp"){
   const me = [displayName(self), self.name, lastName(self.name), "you", "player"].map(reEsc).join("|");
   const them = [MOD.name, MOD.short, displayName(rival), rival.name, lastName(rival.name), "moderator", "voters?", "voter blocs?", "focus groups?", "pundits?", "reporters?", "audience", "narrator", "note", "scene", "segment", "score", "reaction", "result"].map(reEsc).join("|");
   const title = "(?:(?:senator|governor|gov\\.?|sen\\.?|mr\\.?|ms\\.?|mrs\\.?|dr\\.?|rep\\.?|representative|congress\\w*|mayor|general|secretary|candidate)\\s+)?";
-  const own = new RegExp("^\\s*" + title + "(" + me + ")\\s*(\\([^)]*\\))?\\s*:\\s*", "i");
+  // "Lindqvist:" or a bit of narration: "Andrea Lindqvist cuts in over the moderator:"
+  const own = new RegExp("^\\s*" + title + "(" + me + ")((?:\\s+[a-z][\\w']*){0,6})?\\s*(\\([^)]*\\))?\\s*:\\s*", "i");
   const other = new RegExp("^\\s*" + title + "(" + them + ")\\b[^:\\n]{0,30}:", "i");
   const caps = /^\s*[#*_\s]*[A-Z][A-Z0-9 '’&()\/.-]{2,40}[*_]*\s*:/;
   const out = [];
   for (let line of t.split("\n")){
     line = line.replace(/^\s*[#*_]+\s*|\s*[*_]+\s*$/g, "");
     line = stripPlanLabel(line);
+    // A repeated "HEARD: normal." in front of the speech is a label, not a reason to lose the speech.
+    line = line.replace(/^\s*["\u201c']?\s*\**\s*heard\s*\**\s*:\s*(normal|slur|funny)\b[.:,;!]?\s*/i, "");
+    if (!line.trim()) continue;
     if (/^\s*(plan|heard)\s*:/i.test(line)) continue; // a stray planning note, never spoken
-    if (own.test(line)) { line = line.replace(own, ""); }
+    if (own.test(line)) { line = line.replace(own, ""); if (/^'[^']/.test(line) && /'\s*$/.test(line)) line = line.replace(/^'|'\s*$/g, ""); }
     else if (other.test(line) || caps.test(line)) break;
     out.push(line);
   }
@@ -2421,7 +2425,10 @@ function dropRepeats(t){
   }
   return keep.join(" ").trim() || t;
 }
-function dropMetaTalk(t){ return sentencesOf(t).filter(x => !META_SENTENCE.test(x)).join(" ").trim(); }
+// Notes to itself that small models sometimes speak aloud ("My response must address…", "This
+// needs to be concise, factual, and unemotional.").
+const SELF_TALK = /\b(my response (must|should|will|needs)|this (needs|has) to be (concise|short|brief|factual|calm|measured)|so I need to|I need to (remain|stay) calm|(cite|state) (the )?facts and avoid|avoid raising my voice|use (it|this|that) as a backdrop|which I will ignore|I won'?t lecture; I'?ll|the (tone|angle) (here|should be))\b/i;
+function dropMetaTalk(t){ return sentencesOf(t).filter(x => !META_SENTENCE.test(x) && !SELF_TALK.test(x)).join(" ").trim(); }
 const FALLBACK_BY_KIND = {
   opening: ["Good evening. I'm running because families in this country are working harder than ever and still falling behind. Tonight I'll tell you exactly how I'll change that, and I'll ask for your vote."],
   closing: ["In a few weeks you'll decide the next four years. I've told you tonight what I'll do and how I'll pay for it. I'm asking for your trust, and I'm asking for your vote."]
@@ -3199,7 +3206,7 @@ async function runJudge(){
     catch(e){}
     if (ep !== epoch) return;
     busy = false;
-    if (q && /[a-z]{3}/i.test(q) && !REFUSAL.test(q)) next.question = fixAddressee(q, next);
+    if (q && /[a-z]{3}/i.test(q) && !REFUSAL.test(q)) next.question = fixAddressee(wholeQuestion(q), next);
     judgeInBackground(ri, S.notes.slice());
     startRound(ri + 1);
     return;
@@ -3256,6 +3263,21 @@ async function runReactions(){
 // Make sure the moderator's next question is addressed to the right candidate.
 const ADDRESS_WORD = /^(Mr\.?|Ms\.?|Mrs\.?|Madam|Senator|Sen\.?|Governor|Gov\.?|Mayor|General|Gen\.?|Dr\.?|Doctor|Representative|Rep\.?|Congressman|Congresswoman|[A-Z][a-zA-Z'-]+)$/;
 const COMMON_START = /^(What|How|Why|When|Where|Who|Which|Do|Does|Did|Is|Are|Can|Could|Would|Will|Should|If|In|The|Your|You|Let|Tell|Name|Give|Explain|So|And|But|Now|Many|Some|Last|This|That)\b/;
+// A question that ran into the length limit ends at its last whole sentence.
+function wholeQuestion(q){
+  q = String(q || "").trim();
+  if (/[?.!]["\u201d']?$/.test(q)) return q;
+  const i = q.lastIndexOf("?");
+  if (i > q.length * 0.4) return q.slice(0, i + 1);
+  // "How does your record inform your approach, and what steps have you taken to ensure your cuts do not"
+  // → "How does your record inform your approach?"
+  const ss = sentencesOf(q), last = ss[ss.length - 1];
+  if (/^(how|what|why|when|where|which|who|do|does|did|would|will|can|could|should|is|are|have|has)\b/i.test(last)){
+    const cut = Math.max(last.lastIndexOf(", and "), last.lastIndexOf(", or "), last.lastIndexOf(", but "));
+    if (cut > 15) return [...ss.slice(0, -1), last.slice(0, cut) + "?"].join(" ");
+  }
+  return ss.length > 1 ? ss.slice(0, -1).join(" ") : q;
+}
 // "Elaine Brooks: Governor Ellis, …" → "Governor Ellis, …" (small models sometimes write the speaker label).
 function stripModLabel(t){
   const who = [MOD.name, MOD.short, MOD.name.split(" ")[0], MOD.name.split(" ").pop(), "moderator"].map(reEsc).join("|");
@@ -3279,7 +3301,7 @@ async function afterJudgment(j){
   applyJudgment(j);
   const next = S.rounds[S.ri + 1];
   if (next){
-    if (j.next_question && typeof j.next_question === "string" && j.next_question.trim()) next.question = fixAddressee(j.next_question.trim(), next);
+    if (j.next_question && typeof j.next_question === "string" && j.next_question.trim()) next.question = fixAddressee(wholeQuestion(j.next_question.trim()), next);
     save(); render();
     startRound(S.ri + 1);
   } else {
