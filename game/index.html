@@ -3634,7 +3634,7 @@ function renderSide(){
   pr.states.forEach(s => {
     const row = el("div", "ms"); row.title = `${s.name}, ${s.ev} electoral votes`;
     row.append(el("b", null, s.id));
-    const bar = el("div", "dbar"), fill = el("i"), pct = clamp(Math.abs(s.margin) / 6, 0, 1) * 50;
+    const bar = el("div", "dbar"), fill = el("i"), pct = clamp(Math.abs(s.margin) / 10, 0, 1) * 50;
     fill.style.background = s.margin >= 0 ? "var(--you)" : "var(--opp)"; fill.style.width = pct + "%";
     if (s.margin >= 0) fill.style.left = "50%"; else fill.style.right = "50%";
     bar.append(fill); row.append(bar);
@@ -3649,7 +3649,7 @@ function renderSide(){
   $("#legYou").textContent = lastName(S.player.name) + " →"; $("#legOpp").textContent = "← " + S.opp.short;
 
   const sm = $("#stateMeters"); sm.innerHTML = "";
-  pr.states.forEach(s => sm.append(meter(`${s.name}`, `${s.ev} EV`, s.margin, 6, v => Math.abs(v) < 0.05 ? "Tied" : (v > 0 ? lastName(S.player.name).slice(0, 8) : S.opp.short.slice(0, 8)) + " +" + Math.abs(v).toFixed(1))));
+  pr.states.forEach(s => sm.append(meter(`${s.name}`, `${s.ev} EV`, s.margin, 10, v => Math.abs(v) < 0.05 ? "Tied" : (v > 0 ? lastName(S.player.name).slice(0, 8) : S.opp.short.slice(0, 8)) + " +" + Math.abs(v).toFixed(1))));
   const bm = $("#blocMeters"); bm.innerHTML = "";
   BLOCS.forEach(b => bm.append(meter(b.name, "", S.blocs[b.id], 30, v => (v > 0 ? "+" : "") + v, S.lastShift[b.id])));
 
@@ -3823,7 +3823,7 @@ function renderResults(loading){
   R.states.slice().sort((x, z) => z.ev - x.ev).forEach(s => {
     const row = el("div", "st");
     const nm = el("div", "nm"); nm.append(el("b", null, s.name)); nm.append(el("div", "muted", s.ev + " electoral votes")); nm.lastChild.style.fontSize = "12.5px";
-    const m = meter("", "", s.margin, 6, () => ""); m.style.gridTemplateColumns = "0 1fr 0";
+    const m = meter("", "", s.margin, 10, () => ""); m.style.gridTemplateColumns = "0 1fr 0";
     const c = el("span", "callout " + (s.margin > 0 ? "you" : "opp"), (s.margin > 0 ? lastName(S.player.name) : S.opp.short).slice(0, 10) + " +" + Math.abs(s.margin).toFixed(1));
     row.append(nm, m, c); list.append(row);
   });
