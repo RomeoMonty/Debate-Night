@@ -2281,9 +2281,12 @@ const REACT_SCHEMA = {type:"object", properties:{
 function reactionsPrompt(a, b, idx){
   const p = S.player, o = S.opp, r = S.rounds[idx], P = lastName(p.name);
   const youParty = /independent/i.test(p.party) ? `the independent coalition backing ${P}` : `${p.party} Party leaders and base voters`;
+  const oppParty = /independent/i.test(o.party) ? `the independent coalition backing ${o.short}` : `${o.party} Party leaders and base voters`;
   const moves = BLOCS.map(x => ({x, d: Number(a.shifts?.[x.id]?.d) || 0})).filter(m => m.d).sort((m, n) => Math.abs(n.d) - Math.abs(m.d)).slice(0, 3)
     .map(m => `${m.x.name} ${m.d > 0 ? "toward " + P : "toward " + o.short} (${m.d > 0 ? "+" : ""}${m.d})`).join("; ") || "little movement";
   const winner = a.winner === "you" ? P : a.winner === "opp" ? o.short : "nobody";
+  // Earlier focus groups, so the same "Marcus, 42, truck driver" doesn't come back every segment.
+  const heard = S.judged.slice(0, idx).flatMap(j => (j && j.focus) || []).map(f => `${String(f.who).split(",")[0]} (${clip(f.quote, 60)})`).slice(-9);
   return withHistory({system: gameContext(b), user: `TASK: Voice real people's reactions to one segment of the debate. People react honestly and nobody lectures.
 Segment: "${r.label}". Verdict: ${clip(String(a.summary || ""), 220)} Won by: ${winner}.
 Voter movement: ${moves}.
@@ -2291,10 +2294,11 @@ ${txOr(`What was said: the transcript lines marked [Segment ${idx + 1}: …] abo
 ${transcriptText(Math.max(2, b.lines - 1), idx, Math.round(b.tx * 0.8))}`)}
 
 Reply as JSON with:
-focus_group: exactly 3 voters, each with who ("first name, age, job, town, state abbreviation" in a battleground state), bloc (a bloc id) and quote (1-2 sentences in their own voice). Include one who disagrees with the verdict.
-your_party: one sentence on how ${youParty} reacted.
-other_party: one sentence on how ${o.party} Party leaders and base voters reacted.
-pundit: one sharp line from a cable-news analyst.`});
+focus_group: exactly 3 voters, each with who ("first name, age, job, town, state abbreviation", the town really in that state; battleground states: ${SWING.map(s => s.name).join(", ")}), bloc (a bloc id) and quote (1-2 sentences in their own voice, about something specific said in this segment). Include one who disagrees with the verdict.${heard.length ? `
+These voters already spoke tonight, so pick three new people (new first names, new jobs) with new words: ${heard.join("; ")}.` : ""}
+your_party: one sentence, at most 25 words, on how ${youParty} reacted.
+other_party: one sentence, at most 25 words, on how ${oppParty} reacted.
+pundit: one sharp line, at most 25 words, from a cable-news analyst.`});
 }
 
 const RECAP_SCHEMA = {type:"object", properties:{headline:{type:"string"}, recap:{type:"string"}, exit_poll:{type:"string"}}, required:["headline","recap","exit_poll"]};
@@ -3300,6 +3304,13 @@ async function runJudge(){
   await afterJudgment(a);
 }
 
+// A quote as the AI wrote it can come wrapped in its own quote marks, or stop mid-word at the length
+// limit ("working-fam-"): unwrap it and end it at a whole sentence.
+function tidyQuote(s){
+  s = String(s || "").trim().replace(/^(['"\u201c\u2018])(.*)(['"\u201d\u2019])$/s, "$2").trim();
+  if (!s || /[.!?\u2026"\u201d')\]]$/.test(s)) return s;
+  return endAtSentence(s.replace(/[\s,;:\u2014-]*[A-Za-z'-]*-$/, "").replace(/[\s,;:\u2014-]+$/, ""));
+}
 let reacting = false;
 async function runReactions(){
   if (reacting || !S || !S.reactPending) return;
@@ -3314,8 +3325,8 @@ async function runReactions(){
     if (ep !== epoch || !S) return;
     const j = S.judged[idx];
     if (j){
-      j.focus = Array.isArray(r.focus_group) ? r.focus_group.slice(0, 3).map(f => ({who:String(f.who || "Voter"), bloc:String(f.bloc || ""), quote:String(f.quote || "")})) : [];
-      j.yourParty = String(r.your_party || ""); j.otherParty = String(r.other_party || ""); j.pundit = String(r.pundit || "");
+      j.focus = Array.isArray(r.focus_group) ? r.focus_group.slice(0, 3).map(f => ({who:String(f.who || "Voter"), bloc:String(f.bloc || ""), quote:tidyQuote(f.quote)})) : [];
+      j.yourParty = tidyQuote(r.your_party); j.otherParty = tidyQuote(r.other_party); j.pundit = tidyQuote(r.pundit);
       save();
       if (S.phase === "debate"){
         renderSide();
@@ -4279,7 +4290,7 @@ const TestRun = {
     // The test player's own AI call would bump them every time, so it first waits for them (no longer
     // than a slow typist would take).
     const t0 = Date.now(); await new Promise(r => setTimeout(r, 50));
-    while ((reacting || S.reactPending) && ep === epoch && Date.now() - t0 < 180000) await new Promise(r => setTimeout(r, 500));
+    while ((reacting || S.reactPending) && ep === epoch && Date.now() - t0 < 240000) await new Promise(r => setTimeout(r, 500));
     let text = "";
     if (P.brief){
       ta.placeholder = `${P.name} is writing…`;
