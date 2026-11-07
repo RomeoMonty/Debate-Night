@@ -5,6 +5,7 @@
 //   MODE=lab|debates|both  PERSONAS=quick  MODEL_PATH=…/model.gguf  SERVER_BIN=…/llama-server
 //   OUT=dir  PW_DIR=dir-with-playwright (optional)  node scripts/cloud-lab.mjs
 import fs from "node:fs";
+import zlib from "node:zlib";
 import os from "node:os";
 import path from "node:path";
 import { spawn, execSync } from "node:child_process";
@@ -129,6 +130,20 @@ async function main(){
   const errors = [];
   page.on("pageerror", e => errors.push(`page error: ${e.message}`));
   page.on("console", m => { if (m.type() === "error") errors.push(`console: ${m.text().slice(0, 300)}`); });
+  // Every AI call's exact request and reply, for building training data (SAVE_CALLS=1).
+  const calls = [];
+  if (env.SAVE_CALLS) page.on("requestfinished", async req => {
+    if (!req.url().includes("/v1/chat/completions")) return;
+    try {
+      const body = JSON.parse(req.postData() || "{}"), res = await req.response(), raw = res ? await res.text() : "";
+      let reply = "";
+      if (body.stream) for (const l of raw.split("\n")) { const m = /^data:\s*(\{.*\})\s*$/.exec(l); if (m) { try { const d = JSON.parse(m[1]); reply += (d.choices?.[0]?.delta?.content || ""); } catch(e){} } }
+      else { try { reply = JSON.parse(raw).choices?.[0]?.message?.content || ""; } catch(e){} }
+      calls.push({ t: Date.now(), status: res ? res.status() : 0, body, reply });
+      if (calls.length % 10 === 0) saveCalls();
+    } catch(e){}
+  });
+  const saveCalls = () => { if (calls.length) fs.writeFileSync(path.join(OUT, `${stamp}-calls.jsonl.gz`), zlib.gzipSync(calls.map(c => JSON.stringify(c)).join("\n") + "\n")); };
   await page.exposeFunction("__labStats", () => stats());
   await page.exposeFunction("__labLog", n => serverLog.slice(-(n || 200)).join("\n"));
   await page.addInitScript(({ models, port, modelId }) => {
@@ -195,6 +210,7 @@ async function main(){
 
   const head = `# Cloud lab run\n\n${machine()}\nMode: ${MODE}${MODE !== "lab" ? ` · players: ${PERSONAS.join(", ")}` : ""}\n${env.NOTE ? `Checking: ${env.NOTE}\n` : ""}\n## Steps\n\n${notes.map(n => "    " + n).join("\n")}\n\n## Errors in the game page\n\n${errors.length ? errors.slice(0, 200).map(e => "- " + e).join("\n") : "None."}\n`;
   fs.writeFileSync(path.join(OUT, `${stamp}-run.md`), head);
+  saveCalls();
   fs.writeFileSync(path.join(OUT, `${stamp}-engine.log`), serverLog.slice(-3000).join("\n"));
   publish();
   await browser.close();

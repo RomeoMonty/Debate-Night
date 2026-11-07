@@ -34,12 +34,16 @@ on:
       machines:
         description: "How many machines share the debates (each takes every Nth player)"
         default: "6"
+      save_calls:
+        description: "Also save every AI call's exact request and reply (training data)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
 
 concurrency:
-  group: ai-lab-${{ inputs.model }}
+  group: ai-lab-${{ inputs.model }}${{ inputs.save_calls && format('-data-{0}', github.run_id) || '' }}
   cancel-in-progress: false
 
 env:
@@ -131,6 +135,7 @@ jobs:
           NO_MLOCK: "1"
           PUBLISH_DIR: runs/${{ github.run_number }}-${{ inputs.mode }}
           GH_TOKEN: ${{ github.token }}
+          SAVE_CALLS: ${{ inputs.save_calls && '1' || '' }}
         run: |
           export MODEL_PATH="$HOME/models/$MODEL_FILE"
           node scripts/cloud-lab.mjs
