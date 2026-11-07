@@ -45,7 +45,7 @@ def side(r):
     return "draw" if w == "draw" else "player" if w == player else "opp"
 by = collections.Counter(side(r) for r in scoring)
 top = max(by.values())
-reps = {k: max(1, min(3, round(top / (2 * v)))) for k, v in by.items()}
+reps = {k: max(1, min(3, round(top / (1.5 * v)))) for k, v in by.items()}
 print("Verdicts by winner:", dict(by), "repeats:", reps)
 rows = [r for r in scoring for _ in range(reps[side(r)])] + replay
 
