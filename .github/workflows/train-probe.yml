@@ -1,0 +1,23 @@
+# One-off check: can GitHub's free machines fine-tune the Standard model, and how fast?
+name: Training probe
+on:
+  workflow_dispatch:
+    inputs:
+      lens: { description: "Sequence lengths to time", default: "512,2048,4096" }
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix: { os: [ubuntu-latest, ubuntu-24.04-arm] }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.12" }
+      - run: |
+          pip install --index-url https://download.pytorch.org/whl/cpu torch
+          pip install transformers peft accelerate safetensors huggingface_hub
+          nproc; free -g; lscpu | grep -iE "model name|flags" | cut -c1-400
+      - env: { LENS: "${{ inputs.lens }}" }
+        run: python training/probe.py 2>&1 | tail -40
