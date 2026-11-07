@@ -72,10 +72,9 @@ for b in blocks:
     if "next_question" in keys: tgt["next_question"] = s["reply"].get("next_question", "")
     if keys != list(tgt): print(sid, "grammar keys", keys); errs += 1
     out.append({"id": sid, "game": game_of(s), "messages": msgs, "body": s["body"], "target": json.dumps(tgt, ensure_ascii=False, separators=(",", ":"))})
-# Every fourth game (in a fixed, shuffled order) is held out for testing.
-games = sorted({o["game"] for o in out}, key=lambda g: hashlib.sha1(g.encode()).hexdigest())
-test = set(games[::4])
-for o in out: o["split"] = "test" if o["game"] in test else "train"
+# About one game in four is held out for testing, chosen by a hash of the game so the choice never
+# changes when more games are added.
+for o in out: o["split"] = "test" if int(hashlib.sha1(("a" + o["game"]).encode()).hexdigest(), 16) % 4 == 0 else "train"
 with open(OUT, "w") as wf:
     for o in out: wf.write(json.dumps(o, ensure_ascii=False) + "\n")
 print(len(out), "labels,", errs, "problems;", sum(o["split"] == "test" for o in out), "held out for testing in", len({o["game"] for o in out if o["split"] == "test"}), "games")
