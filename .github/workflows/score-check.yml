@@ -1,0 +1,130 @@
+# Grades the scorer against careful verdicts: replays the game's exact scoring requests (saved from
+# lab debates) to the real model, with or without a trained add-on, and compares each reply with the
+# verdict written for that segment. Reports go to the "lab-reports" branch (runs/<number>-scorecheck/).
+name: Scorer check
+run-name: "Scorer check: ${{ inputs.split }}${{ inputs.lora && ' + add-on' || '' }}${{ inputs.note && format(' · {0}', inputs.note) || '' }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      split:
+        description: "Which segments: test (held out from training), train, or all"
+        type: choice
+        options: [test, train, all]
+        default: test
+      lora:
+        description: "Add-on to load (a release asset URL, or empty for the plain model)"
+        default: ""
+      machines:
+        description: "How many machines share the segments"
+        default: "6"
+      note:
+        description: "What this run is checking"
+        default: ""
+
+permissions:
+  contents: write
+
+env:
+  LLAMA_TAG: b11600
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      shards: ${{ steps.p.outputs.shards }}
+    steps:
+      - id: p
+        env: { N: "${{ inputs.machines }}" }
+        run: |
+          n=$(( ${N:-1} < 1 ? 1 : ${N:-1} )); n=$(( n > 20 ? 20 : n ))
+          echo "shards=[$(seq -s, 0 $((n-1)))]" >> "$GITHUB_OUTPUT"; cat "$GITHUB_OUTPUT"
+
+  check:
+    needs: plan
+    name: part ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with: { node-version: 22 }
+
+      - name: Fetch the AI engine
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: node scripts/fetch-llama.mjs linux-x64
+
+      - name: Find the model file
+        id: model
+        run: |
+          node -e '
+            const m = require("./models.js").find(x => x.id === "standard");
+            fetch(`https://huggingface.co/api/models/${m.repo}`).then(r => r.json()).then(j => {
+              const files = (j.siblings || []).map(s => s.rfilename);
+              const f = files.includes(m.file) ? m.file : files.find(n => n.endsWith(`-${m.quant}.gguf`)) || m.file;
+              console.log(`repo=${m.repo}\nfile=${f}`);
+            });' >> "$GITHUB_OUTPUT"
+          cat "$GITHUB_OUTPUT"
+
+      - name: Cache the model
+        uses: actions/cache@v4
+        with:
+          path: ~/models
+          key: model-${{ runner.os }}-${{ steps.model.outputs.file }}
+
+      - name: Download the model (first run only)
+        run: |
+          mkdir -p ~/models
+          f=~/models/"${{ steps.model.outputs.file }}"
+          [ -s "$f" ] || curl -fL --retry 3 -o "$f" "https://huggingface.co/${{ steps.model.outputs.repo }}/resolve/main/${{ steps.model.outputs.file }}"
+
+      - name: Build the graded segments
+        run: |
+          args=(); for s in training/data/*-segments.jsonl.gz; do args+=("$s" "${s%-segments.jsonl.gz}-labels.txt"); done
+          python3 training/build_labels.py "${args[@]}" "$RUNNER_TEMP/graded.jsonl"
+
+      - name: Start the engine
+        env: { LORA: "${{ inputs.lora }}" }
+        run: |
+          extra=()
+          if [ -n "$LORA" ]; then curl -fL --retry 3 -o "$RUNNER_TEMP/addon.gguf" "$LORA"; extra=(--lora "$RUNNER_TEMP/addon.gguf"); fi
+          cd resources/llama-x64
+          LD_LIBRARY_PATH="$PWD" nohup ./llama-server -m ~/models/"${{ steps.model.outputs.file }}" --host 127.0.0.1 --port 18600 \
+            -c 12288 -np 1 --reasoning-budget 0 --jinja -ctxcp 8 -cram 0 --no-webui -ngl 0 -fa auto "${extra[@]}" > "$RUNNER_TEMP/engine.log" 2>&1 &
+          for i in $(seq 1 300); do curl -sf http://127.0.0.1:18600/health > /dev/null && { echo "ready after ${i}s"; exit 0; }; sleep 1; done
+          tail -50 "$RUNNER_TEMP/engine.log"; exit 1
+
+      - name: Grade the scorer
+        env: { EVAL_LABEL: "${{ inputs.lora && 'add-on' || 'base' }}" }
+        run: |
+          mkdir -p "$RUNNER_TEMP/out"
+          python3 training/score_eval.py "$RUNNER_TEMP/graded.jsonl" "$RUNNER_TEMP/out/part-${{ matrix.shard }}.md" \
+            --shard "${{ matrix.shard }}/${{ strategy.job-total }}" --split "${{ inputs.split }}"
+          tail -3 "$RUNNER_TEMP/engine.log" > "$RUNNER_TEMP/out/part-${{ matrix.shard }}-engine.log" || true
+
+      - name: Save the report to the lab-reports branch
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NOTE: ${{ inputs.note }}
+          LORA: ${{ inputs.lora }}
+        run: |
+          out="$RUNNER_TEMP/out"; [ -d "$out" ] || { echo "No report."; exit 0; }
+          dest="runs/${{ github.run_number }}-scorecheck"
+          cd "$RUNNER_TEMP"; rm -rf rep
+          url="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git clone -q --depth 1 --branch lab-reports "$url" rep && cd rep
+          mkdir -p "$dest" && cp "$out"/* "$dest"/
+          printf '%s\n' "commit: ${GITHUB_SHA}" "split: ${{ inputs.split }}" "lora: $LORA" "note: $NOTE" > "$dest/about.txt"
+          git add -A
+          git diff --cached --quiet && { echo "Already saved."; exit 0; }
+          git -c user.name="AI lab" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -q -m "Scorer check ${{ github.run_number }} part ${{ matrix.shard }}"
+          for i in 1 2 3 4 5 6 7 8; do
+            git push -q origin HEAD:lab-reports && { echo "Saved to lab-reports/$dest"; exit 0; }
+            git pull -q --rebase -X theirs origin lab-reports || true; sleep $((RANDOM % 5 + 1))
+          done
+          exit 1
